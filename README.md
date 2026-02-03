@@ -1,6 +1,7 @@
 # HKSA Tabling Scheduler
 
-This application automates the scheduling of tabling shifts for the Hong Kong Student Association (HKSA).'
+This application automates the scheduling of tabling shifts for the Hong Kong Student Association (HKSA).
+
 Visit the app at: https://hksatabling-utjuta9cmx64qjjpfh7rpk.streamlit.app/
 
 ## Features
@@ -16,3 +17,4 @@ If the logic needs to change (e.g., shift times change or new constraints are ad
 3. Commit the changes to GitHub.
 
 4. Streamlit Cloud will automatically update the live app.
+
