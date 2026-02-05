@@ -94,28 +94,30 @@ class Scheduler:
             valid_pairs = self._get_valid_pairs(shift)
             shift_difficulty.append((len(valid_pairs), shift))
         
-        # Sort by difficulty (fewest options first)
         shift_difficulty.sort(key=lambda x: x[0])
         
         locked_shifts = [s for s in self.schedule_grid if s.locked]
         self.schedule_grid = locked_shifts + [item[1] for item in shift_difficulty]
         
         start_index = len(locked_shifts)
-        success = self._backtrack(start_index)
         
-        if not success:
-            print("Optimization failed. Restoring best partial solution...")
-            self._restore_best_state()
-            # Removed suggestion filling to leave slots blank
-            return False
-        return True
+        # We ignore the return value because we always want the "best effort" result
+        self._backtrack(start_index)
+        
+        # Always restore the best state found
+        self._restore_best_state()
+        
+        # [BUG FIX 1] Accurate Success Reporting
+        total_slots = len(self.schedule_grid)
+        return self.max_filled_count == total_slots
 
     def _backtrack(self, shift_index: int) -> bool:
         self.attempts += 1
         if self.attempts > 500000: return False 
 
-        if shift_index > self.max_filled_count:
-            self.max_filled_count = shift_index
+        current_filled_count = sum(1 for s in self.schedule_grid if len(s.assigned_members) == 2)
+        if current_filled_count > self.max_filled_count:
+            self.max_filled_count = current_filled_count
             self._save_current_state()
 
         if shift_index >= len(self.schedule_grid): 
@@ -132,7 +134,6 @@ class Scheduler:
             score = 0
             if current_shift.day in p1.preferred_days: score += 5
             if current_shift.day in p2.preferred_days: score += 5
-            # No need to prioritize 0 shifts here as we only pick people with 0 shifts
             return score
 
         potential_pairs.sort(key=pair_score, reverse=True)
@@ -148,7 +149,7 @@ class Scheduler:
             p1.assigned_shifts.pop()
             p2.assigned_shifts.pop()
             
-        return False
+        return self._backtrack(shift_index + 1)
 
     def _save_current_state(self):
         state = {}
@@ -158,20 +159,34 @@ class Scheduler:
         self.best_grid_state = state
 
     def _restore_best_state(self):
+        # [BUG FIX 2] Double Assignment Corruption
+        # Clears assignments before restoring to avoid duplicate entries
+        
+        # 1. Clear ALL assignments first
+        for m in self.members:
+            m.assigned_shifts = []
+
+        # 2. Re-apply locked assignments
+        for shift in self.schedule_grid:
+            if shift.locked:
+                for m in shift.assigned_members:
+                    real_m = next((x for x in self.members if x.name == m.name), None)
+                    if real_m: real_m.assigned_shifts.append((shift.day, shift.time_idx))
+
+        # 3. Apply best state to unlocked shifts
         for shift in self.schedule_grid:
             if shift.locked: continue
+            
             saved_names = self.best_grid_state.get((shift.day, shift.time_idx), [])
             restored_members = []
             for name in saved_names:
                 mem = next((m for m in self.members if m.name == name), None)
                 if mem: 
                     restored_members.append(mem)
-                    if (shift.day, shift.time_idx) not in mem.assigned_shifts:
-                        mem.assigned_shifts.append((shift.day, shift.time_idx))
+                    mem.assigned_shifts.append((shift.day, shift.time_idx))
             shift.assigned_members = restored_members
 
     def _get_valid_pairs(self, shift: Shift):
-        # Strict 1-shift rule: Must be available AND have 0 assigned shifts
         available_people = [
             m for m in self.members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0
@@ -199,7 +214,6 @@ def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> 
                     score += 10
                     reasons.append(f"{p2.name} prefers {day}")
                 if (time_idx == 0 or time_idx == 3) and not (p1.gender == 'Male' or p2.gender == 'Male'):
-                    # Strictly invalid for gender constraints
                     continue
                 else:
                     score += 5
@@ -242,7 +256,12 @@ def parse_file(file_obj) -> List[Member]:
         elif "wednesday" in c_lower: col_map["Wednesday"] = col
         elif "thursday" in c_lower: col_map["Thursday"] = col
         elif "friday" in c_lower: col_map["Friday"] = col
-    members = []
+    
+    # [BUG FIX - Feature] Deduplication via Overwrite
+    # Used a dictionary to ensure that if a name appears twice, 
+    # the last occurrence overwrites the previous ones.
+    members_map = {} 
+    
     for idx, row in df.iterrows():
         if "name" not in col_map: break 
         name = str(row[col_map["name"]]).strip()
@@ -262,8 +281,11 @@ def parse_file(file_obj) -> List[Member]:
             for t_str, t_idx in TIME_SLOTS.items():
                 if t_str.replace(" ","") in val.replace(" ",""): day_idx.append(t_idx)
             if day_idx: availability[day] = day_idx
-        members.append(Member(name, gender, availability, avoid_open, avoid_close, pref_days))
-    return members
+            
+        # Overwrite if name exists
+        members_map[name] = Member(name, gender, availability, avoid_open, avoid_close, pref_days)
+        
+    return list(members_map.values())
 
 def generate_excel_bytes(schedule_grid, active_days, all_members=None):
     output = io.BytesIO()
@@ -287,11 +309,12 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
                 if len(shift.assigned_members) >= 1: 
                     name = shift.assigned_members[0].name
                     p1 = name
-                    assigned_names.add(name.split(")")[-1].strip())
+                    # [BUG FIX 3] Name Processing Error
+                    assigned_names.add(name.strip())
                 if len(shift.assigned_members) >= 2: 
                     name = shift.assigned_members[1].name
                     p2 = name
-                    assigned_names.add(name.split(")")[-1].strip())
+                    assigned_names.add(name.strip())
             row_a[day] = p1; row_b[day] = p2
         data_rows.append(row_a); data_rows.append(row_b)
 

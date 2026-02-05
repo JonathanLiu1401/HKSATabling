@@ -1,0 +1,61 @@
+Timestamp,Name (First and Last),Gender,Are you OK with opening shifts?,Are you OK with closing shifts?,Monday,Tuesday,Wednesday,Thursday,Friday,Select days you prefer to table on (if applicable),Screenshot of your calendar
+02/04/2026 12:00:00,Alex,Male,Yes,Yes,10:30-11:30,"11:30-12:30, 12:30-1:30, 1:30-2:30",10:30-11:30,"11:30-12:30, 1:30-2:30","12:30-1:30, 1:30-2:30","Monday, Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Jordan,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Casey,Male,Yes,Yes,"10:30-11:30, 11:30-12:30, 1:30-2:30",,"10:30-11:30, 11:30-12:30, 1:30-2:30","10:30-11:30, 11:30-12:30, 1:30-2:30",,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Taylor,Male,Yes,Yes,"10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30, 1:30-2:30","Tuesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Morgan,Male,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30",,,,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Riley,Female,No,No,10:30-11:30,10:30-11:30,10:30-11:30,10:30-11:30,"10:30-11:30, 12:30-1:30, 1:30-2:30","Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Jamie,Female,Yes,Yes,"10:30-11:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30","10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 1:30-2:30","10:30-11:30, 12:30-1:30, 1:30-2:30","Monday, Wednesday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Avery,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30",10:30-11:30,"11:30-12:30, 12:30-1:30","11:30-12:30, 12:30-1:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Cameron,Male,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",10:30-11:30,"10:30-11:30, 11:30-12:30",10:30-11:30,"10:30-11:30, 12:30-1:30","Thursday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Reese,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30",,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,10:30-11:30,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Quinn,Male,Yes,Yes,"10:30-11:30, 11:30-12:30",,"10:30-11:30, 11:30-12:30",,10:30-11:30,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Peyton,Male,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",10:30-11:30,"10:30-11:30, 11:30-12:30, 12:30-1:30","10:30-11:30, 11:30-12:30, 12:30-1:30","10:30-11:30, 11:30-12:30, 12:30-1:30","Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Skyler,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30",,,"11:30-12:30, 12:30-1:30",12:30-1:30,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Dakota,Female,Yes,Yes,"10:30-11:30, 11:30-12:30",10:30-11:30,"10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30",,"Tuesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Rowan,Male,Yes,Yes,"10:30-11:30, 11:30-12:30",10:30-11:30,"10:30-11:30, 11:30-12:30",12:30-1:30,10:30-11:30,"Tuesday, Thursday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Sage,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30",10:30-11:30,"10:30-11:30, 11:30-12:30, 12:30-1:30","10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30, 12:30-1:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Hayden,Female,Yes,Yes,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,"10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,10:30-11:30,"Monday, Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Parker,Female,Yes,Yes,"10:30-11:30, 12:30-1:30, 1:30-2:30",10:30-11:30,"10:30-11:30, 12:30-1:30, 1:30-2:30",12:30-1:30,"10:30-11:30, 12:30-1:30, 1:30-2:30","Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Emerson,Female,Yes,Yes,,10:30-11:30,"10:30-11:30, 12:30-1:30, 1:30-2:30",10:30-11:30,"12:30-1:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Sawyer,Male,Yes,Yes,,"10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30, 1:30-2:30","10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30","Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Logan,Male,Yes,Yes,,"10:30-11:30, 1:30-2:30",,"10:30-11:30, 1:30-2:30","10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Finley,Female,Yes,Yes,,10:30-11:30,,10:30-11:30,1:30-2:30,"Tuesday, Thursday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,River,Female,Yes,Yes,,,,,"10:30-11:30, 11:30-12:30, 12:30-1:30","10:30-11:30, 11:30-12:30",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Charlie,Male,Yes,Yes,"11:30-12:30, 12:30-1:30, 1:30-2:30",,,,10:30-11:30,"Monday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Phoenix,Female,Yes,Yes,"11:30-12:30, 12:30-1:30, 1:30-2:30",11:30-12:30,"11:30-12:30, 12:30-1:30, 1:30-2:30",11:30-12:30,"11:30-12:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Harley,Female,Yes,Yes,"11:30-12:30, 12:30-1:30, 1:30-2:30",,,11:30-12:30,,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Justice,Female,Yes,Yes,11:30-12:30,"11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 1:30-2:30","11:30-12:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Remy,Female,No,No,11:30-12:30,,,12:30-1:30,,"Monday, Thursday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Sloane,Female,Yes,Yes,"11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30","Monday, Tuesday, Wednesday, Thursday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Ellis,Male,Yes,Yes,11:30-12:30,11:30-12:30,11:30-12:30,11:30-12:30,12:30-1:30,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Bailey,Female,Yes,Yes,,11:30-12:30,,"11:30-12:30, 12:30-1:30, 1:30-2:30","11:30-12:30, 12:30-1:30, 1:30-2:30","Thursday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Tatum,Female,Yes,Yes,,,,11:30-12:30,,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Rory,Male,Yes,Yes,12:30-1:30,11:30-12:30,,10:30-11:30,11:30-12:30,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Kendall,Female,Yes,Yes,12:30-1:30,12:30-1:30,12:30-1:30,10:30-11:30,10:30-11:30,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Micah,Male,Yes,Yes,12:30-1:30,,12:30-1:30,12:30-1:30,,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Arin,Male,Yes,Yes,12:30-1:30,10:30-11:30,12:30-1:30,,,"Monday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Jesse,Male,Yes,Yes,12:30-1:30,12:30-1:30,12:30-1:30,12:30-1:30,10:30-11:30,"Tuesday, Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Kiernan,Male,Yes,Yes,"12:30-1:30, 1:30-2:30",,12:30-1:30,,12:30-1:30,"Monday, Wednesday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Reagan,Male,Yes,Yes,,"12:30-1:30, 1:30-2:30",,12:30-1:30,,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,London,Male,Yes,Yes,,12:30-1:30,,11:30-12:30,12:30-1:30,"Tuesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Dallas,Female,Yes,Yes,,12:30-1:30,,12:30-1:30,12:30-1:30,"Tuesday, Thursday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Shiloh,Female,Yes,Yes,,,,12:30-1:30,10:30-11:30,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Kai,Male,Yes,Yes,,,,,1:30-2:30,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Eden,Female,Yes,Yes,"10:30-11:30, 1:30-2:30","10:30-11:30, 12:30-1:30",,"10:30-11:30, 1:30-2:30","12:30-1:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Asher,Male,Yes,Yes,"11:30-12:30, 12:30-1:30",,,"11:30-12:30, 1:30-2:30","10:30-11:30, 1:30-2:30",,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Wren,Female,No,No,,"12:30-1:30","11:30-12:30, 12:30-1:30",,12:30-1:30,"Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,August,Male,Yes,Yes,"10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30","10:30-11:30, 11:30-12:30","Monday, Tuesday, Wednesday, Thursday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Harper,Female,Yes,Yes,"1:30-2:30","1:30-2:30","1:30-2:30","1:30-2:30","1:30-2:30","Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Marlowe,Male,Yes,Yes,"10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30","10:30-11:30, 12:30-1:30","Monday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Lennox,Female,Yes,Yes,,,"11:30-12:30, 12:30-1:30",,12:30-1:30,"Wednesday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Sutton,Male,Yes,Yes,"10:30-11:30",,10:30-11:30,,"10:30-11:30","Monday, Wednesday, Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Teagan,Female,Yes,Yes,,11:30-12:30,,11:30-12:30,11:30-12:30,,https://drive.google.com/placeholder
+02/04/2026 12:00:00,Briar,Male,No,No,"12:30-1:30","12:30-1:30","12:30-1:30","12:30-1:30","12:30-1:30","Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Hollis,Female,Yes,Yes,"1:30-2:30",,,"1:30-2:30",,"Friday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Remington,Male,Yes,Yes,,,"10:30-11:30, 11:30-12:30, 12:30-1:30",,,"Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Arden,Female,Yes,Yes,,,,"12:30-1:30, 1:30-2:30",,"Thursday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Monroe,Male,Yes,Yes,,"10:30-11:30, 1:30-2:30",,,,"Tuesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Blair,Female,Yes,Yes,12:30-1:30,,12:30-1:30,,,"Monday, Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Campbell,Male,Yes,Yes,,11:30-12:30,12:30-1:30,,,"Tuesday, Wednesday",https://drive.google.com/placeholder
+02/04/2026 12:00:00,Greer,Female,Yes,Yes,,,,10:30-11:30,12:30-1:30,"Thursday",https://drive.google.com/placeholder
