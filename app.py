@@ -256,3 +256,25 @@ else:
                                         
                                         st.toast("Schedule re-optimized!", icon="🔄")
                                         st.rerun()
+
+        st.divider()
+        st.subheader("🔒 Locked Shifts Manager")
+        
+        locked_shifts = [s for s in grid if s.locked]
+        
+        if not locked_shifts:
+            st.info("No shifts are currently locked.")
+        else:
+            for i, shift in enumerate(locked_shifts):
+                c1, c2, c3 = st.columns([2, 4, 2])
+                with c1:
+                    st.write(f"**{shift.day}**")
+                    st.caption(shift.time_label)
+                with c2:
+                    names = [m.name for m in shift.assigned_members]
+                    st.write(", ".join(names) if names else "(Empty)")
+                with c3:
+                    if st.button("🔓 Unlock", key=f"unlock_{i}_{shift.day}_{shift.time_idx}"):
+                        shift.locked = False
+                        st.success("Unlocked!")
+                        st.rerun()
