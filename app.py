@@ -8,6 +8,8 @@ st.set_page_config(page_title="HKSA Scheduler", page_icon="📅", layout="wide")
 if 'members' not in st.session_state: st.session_state['members'] = []
 if 'schedule_grid' not in st.session_state: st.session_state['schedule_grid'] = []
 if 'active_days' not in st.session_state: st.session_state['active_days'] = []
+if 'editor_selected_slot' not in st.session_state: st.session_state['editor_selected_slot'] = None
+if 'forbidden_pairs' not in st.session_state: st.session_state['forbidden_pairs'] = []
 
 st.title("📅 HKSA Tabling Scheduler Pro")
 
@@ -35,13 +37,19 @@ with st.sidebar:
             st.error("Upload data first!")
         else:
             with st.spinner("Solving..."):
-                scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days)
+                # Pass forbidden_pairs to scheduler
+                scheduler = core.Scheduler(
+                    st.session_state['members'], 
+                    active_days=selected_days, 
+                    forbidden_pairs=st.session_state['forbidden_pairs']
+                )
                 success = scheduler.solve()
                 st.session_state['schedule_grid'] = scheduler.schedule_grid
+                st.session_state['editor_selected_slot'] = None 
                 if success: st.success("Perfect schedule found!")
-                else: st.warning("Could not find a perfect fit. Partial schedule generated (no suggestions used).")
+                else: st.warning("Could not find a perfect fit. Partial schedule generated.")
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS (unchanged) ---
 def get_member_options(day, time_idx, current_shift_members):
     options = []
     current_names = [m.name for m in current_shift_members]
@@ -98,11 +106,14 @@ def perform_overwrite_assign(target_shift, new_members):
     for p in new_members:
         p.assigned_shifts.append((target_shift.day, target_shift.time_idx))
 
+def select_slot(day, time_idx):
+    st.session_state['editor_selected_slot'] = (day, time_idx)
+
 # --- MAIN UI ---
 if not st.session_state['schedule_grid']:
     st.info("👈 Upload your file and click 'Auto-Generate' to start.")
 else:
-    tab1, tab2, tab3 = st.tabs(["📊 View", "✏️ Live Editor", "Partner Matcher"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 View", "✏️ Live Editor (Grid)", "Partner Matcher", "Conflict Manager"])
     grid = st.session_state['schedule_grid']
     
     # --- TAB 1: VIEW ---
@@ -142,74 +153,116 @@ else:
                     if slots:
                         labels = [idx_to_label.get(s, "?") for s in sorted(slots)]
                         avail_parts.append(f"{day}: {', '.join(labels)}")
-                
                 unassigned_data.append({
-                    "Name": m.name, 
-                    "Gender": m.gender, 
-                    "Slots Free": total_avail, 
-                    "Availability": " | ".join(avail_parts),
-                    "No Open": "Yes" if m.avoid_opening else "No",
-                    "No Close": "Yes" if m.avoid_closing else "No"
+                    "Name": m.name, "Gender": m.gender, "Slots Free": total_avail, "Availability": " | ".join(avail_parts),
+                    "No Open": "Yes" if m.avoid_opening else "No", "No Close": "Yes" if m.avoid_closing else "No"
                 })
         if unassigned_data:
             st.dataframe(pd.DataFrame(unassigned_data).sort_values(by="Slots Free", ascending=False), use_container_width=True, hide_index=True)
         else:
             st.success("🎉 All members assigned!")
 
-    # --- TAB 2: EDITOR ---
+    # --- TAB 2: EDITOR (GRID) ---
     with tab2:
-        col1, col2 = st.columns(2)
-        with col1: edit_day = st.selectbox("Select Day", selected_days)
-        with col2: 
-            edit_time_label = st.selectbox("Select Time", list(core.TIME_SLOTS.keys()))
-            edit_time_idx = core.TIME_SLOTS[edit_time_label]
-        target_shift = next((s for s in grid if s.day == edit_day and s.time_idx == edit_time_idx), None)
-        
-        if target_shift:
-            st.divider()
+        st.markdown("### 👆 Select a slot to edit")
+        cols_config = [0.8] + [1 for _ in selected_days]
+        header_cols = st.columns(cols_config)
+        header_cols[0].write("**Time**")
+        for i, day in enumerate(selected_days): header_cols[i+1].write(f"**{day}**")
             
-            # --- UNLOCK BUTTON ---
-            if target_shift.locked:
-                c_lock, c_msg = st.columns([1, 4])
-                with c_lock:
-                    if st.button("🔓 Unlock Slot", type="primary"):
-                        target_shift.locked = False
+        for time_label, time_idx in core.TIME_SLOTS.items():
+            row_cols = st.columns(cols_config)
+            row_cols[0].markdown(f"**{time_label}**")
+            for i, day in enumerate(selected_days):
+                shift = next((s for s in grid if s.day == day and s.time_idx == time_idx), None)
+                if shift:
+                    names = [m.name for m in shift.assigned_members]
+                    btn_label = "\n".join(names) if names else "➕ Empty"
+                    if shift.locked: btn_label = "🔒 " + btn_label.replace("\n", ", ")
+                    is_selected = (st.session_state['editor_selected_slot'] == (day, time_idx))
+                    btn_type = "primary" if is_selected else "secondary"
+                    if row_cols[i+1].button(btn_label, key=f"btn_{day}_{time_idx}", use_container_width=True, type=btn_type):
+                        select_slot(day, time_idx)
                         st.rerun()
-                with c_msg:
-                    st.warning("This slot is locked. Unlocking it allows it to be edited or re-rolled.")
-            
-            current_p1 = target_shift.assigned_members[0] if len(target_shift.assigned_members) > 0 else None
-            current_p2 = target_shift.assigned_members[1] if len(target_shift.assigned_members) > 1 else None
-            
-            opts1 = get_member_options(edit_day, edit_time_idx, target_shift.assigned_members)
-            if current_p1: opts1.insert(0, f"👤 {current_p1.name}")
-            else: opts1.insert(0, "(Unfilled)")
-            sel1 = st.selectbox("Slot 1", opts1, key="p1_ed")
-            
-            opts2 = get_member_options(edit_day, edit_time_idx, target_shift.assigned_members)
-            if current_p2: opts2.insert(0, f"👤 {current_p2.name}")
-            else: opts2.insert(0, "(Unfilled)")
-            sel2 = st.selectbox("Slot 2", opts2, key="p2_ed")
 
-            if st.button("Update Slot"):
-                new_members = []
-                if sel1 != "(Unfilled)":
-                    m1 = find_member_by_str(sel1)
-                    if m1: new_members.append(m1)
-                if sel2 != "(Unfilled)":
-                    m2 = find_member_by_str(sel2)
-                    if m2 and m2 not in new_members: new_members.append(m2)
-                
-                perform_overwrite_assign(target_shift, new_members)
-                target_shift.locked = False # Manual edit breaks lock
-                st.success("Updated!")
-                st.rerun()
+        if st.session_state['editor_selected_slot']:
+            sel_day, sel_time_idx = st.session_state['editor_selected_slot']
+            target_shift = next((s for s in grid if s.day == sel_day and s.time_idx == sel_time_idx), None)
+            if target_shift:
+                st.divider()
+                st.markdown(f"### ✏️ Editing: {sel_day} @ {target_shift.time_label}")
+                with st.container(border=True):
+                    if target_shift.locked:
+                        c_lock, c_msg = st.columns([1, 4])
+                        with c_lock:
+                            if st.button("🔓 Unlock Slot", type="primary"):
+                                target_shift.locked = False
+                                st.rerun()
+                        with c_msg: st.warning("Locked.")
+                    
+                    current_p1 = target_shift.assigned_members[0] if len(target_shift.assigned_members) > 0 else None
+                    current_p2 = target_shift.assigned_members[1] if len(target_shift.assigned_members) > 1 else None
+                    
+                    c_sel1, c_sel2 = st.columns(2)
+                    with c_sel1:
+                        opts1 = get_member_options(sel_day, sel_time_idx, target_shift.assigned_members)
+                        opts1.insert(0, "(Unfilled)")
+                        if current_p1: opts1.insert(0, f"👤 {current_p1.name}")
+                        sel1 = st.selectbox("Slot 1 Member", opts1, key="p1_ed")
+                    with c_sel2:
+                        opts2 = get_member_options(sel_day, sel_time_idx, target_shift.assigned_members)
+                        opts2.insert(0, "(Unfilled)")
+                        if current_p2: opts2.insert(0, f"👤 {current_p2.name}")
+                        sel2 = st.selectbox("Slot 2 Member", opts2, key="p2_ed")
 
-    # --- TAB 3: PARTNER MATCHER (RE-ROLL) ---
+                    st.write("")
+                    b_col1, b_col2 = st.columns(2)
+                    with b_col1:
+                        if st.button("Update Slot (No Reroll)", use_container_width=True):
+                            new_members = []
+                            if sel1 != "(Unfilled)":
+                                m1 = find_member_by_str(sel1)
+                                if m1: new_members.append(m1)
+                            if sel2 != "(Unfilled)":
+                                m2 = find_member_by_str(sel2)
+                                if m2 and m2 not in new_members: new_members.append(m2)
+                            perform_overwrite_assign(target_shift, new_members)
+                            target_shift.locked = False
+                            st.success("Updated!")
+                            st.rerun()
+                    with b_col2:
+                        if st.button("🔒 Lock & Reroll", type="primary", use_container_width=True):
+                            new_members = []
+                            if sel1 != "(Unfilled)":
+                                m1 = find_member_by_str(sel1)
+                                if m1: new_members.append(m1)
+                            if sel2 != "(Unfilled)":
+                                m2 = find_member_by_str(sel2)
+                                if m2 and m2 not in new_members: new_members.append(m2)
+                            
+                            conflict = False
+                            for s in grid:
+                                if s.locked and s != target_shift:
+                                    s_names = [m.name for m in s.assigned_members]
+                                    for nm in new_members:
+                                        if nm.name in s_names:
+                                            st.error(f"❌ {nm.name} is locked elsewhere!"); conflict = True; break
+                                if conflict: break
+                            
+                            if not conflict:
+                                with st.spinner("Locking and re-optimizing..."):
+                                    perform_overwrite_assign(target_shift, new_members)
+                                    target_shift.locked = True
+                                    scheduler = core.Scheduler(st.session_state['members'], active_days=st.session_state['active_days'], pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                                    scheduler.solve()
+                                    st.session_state['schedule_grid'] = scheduler.schedule_grid
+                                    st.success("Locked and Rerolled!")
+                                    st.rerun()
+        else: st.info("Select a slot from the grid above to start editing.")
+
+    # --- TAB 3: PARTNER MATCHER ---
     with tab3:
         st.subheader("Partner Matcher & Re-roll")
-        st.markdown("Assign a pair to a slot and **re-optimize the entire schedule** around them.")
-        
         all_names = sorted([m.name for m in st.session_state['members']])
         col_a, col_b = st.columns(2)
         with col_a: name_a = st.selectbox("Person A", all_names, key="match_a")
@@ -220,61 +273,65 @@ else:
             p2 = find_member_exact(name_b)
             best_slots = core.find_best_slots_for_pair(p1, p2, selected_days)
             
-            if not best_slots:
-                st.error("No overlapping availability found for these two!")
+            if not best_slots: st.error("No overlapping availability found!")
             else:
                 st.success(f"Found {len(best_slots)} common slots")
                 for i, slot in enumerate(best_slots[:3]):
                     with st.container():
                         c1, c2, c3 = st.columns([2, 4, 2])
-                        with c1:
-                            st.markdown(f"**{slot['day']}**")
-                            st.caption(slot['time_label'])
+                        with c1: st.markdown(f"**{slot['day']}**"); st.caption(slot['time_label'])
                         with c2: st.info(f"Score: {slot['score']} ({slot['reason']})")
                         with c3:
                             if st.button("Lock & Reroll", key=f"btn_{i}"):
-                                # DUPLICATE CHECK
-                                already_locked = False
-                                for s in grid:
-                                    if s.locked:
-                                        curr_names = [m.name for m in s.assigned_members]
-                                        if name_a in curr_names or name_b in curr_names:
-                                            already_locked = True
-                                            break
-                                if already_locked:
-                                    st.error("One of these members is already in a locked slot! Unlock them first in 'Live Editor'.")
-                                else:
-                                    with st.spinner("Re-optimizing schedule..."):
-                                        target = next((s for s in grid if s.day == slot['day'] and s.time_idx == slot['time_idx']), None)
-                                        perform_overwrite_assign(target, []) 
-                                        target.assigned_members = [p1, p2]
-                                        target.locked = True
-                                        
-                                        scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid)
-                                        success = scheduler.solve()
-                                        st.session_state['schedule_grid'] = scheduler.schedule_grid
-                                        
-                                        st.toast("Schedule re-optimized!", icon="🔄")
-                                        st.rerun()
+                                with st.spinner("Re-optimizing..."):
+                                    target = next((s for s in grid if s.day == slot['day'] and s.time_idx == slot['time_idx']), None)
+                                    perform_overwrite_assign(target, []) 
+                                    target.assigned_members = [p1, p2]
+                                    target.locked = True
+                                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                                    scheduler.solve()
+                                    st.session_state['schedule_grid'] = scheduler.schedule_grid
+                                    st.rerun()
+
+    # --- TAB 4: CONFLICT MANAGER (NEW) ---
+    with tab4:
+        st.subheader("🚫 Conflict Manager")
+        st.markdown("Ensure two specific members are **never assigned to the same slot**.")
+        
+        # Input for New Conflict
+        all_names = sorted([m.name for m in st.session_state['members']])
+        c1, c2, c3 = st.columns([2, 2, 2])
+        with c1: c_p1 = st.selectbox("Member 1", all_names, key="conf_1")
+        with c2: c_p2 = st.selectbox("Member 2", all_names, key="conf_2")
+        with c3: 
+            st.write("") # Spacer
+            if st.button("🚫 Lock Conflict & Reroll", type="primary", use_container_width=True):
+                if c_p1 == c_p2:
+                    st.error("Select two different people.")
+                else:
+                    pair = tuple(sorted((c_p1, c_p2)))
+                    if pair in st.session_state['forbidden_pairs']:
+                        st.warning("This conflict rule already exists.")
+                    else:
+                        st.session_state['forbidden_pairs'].append(pair)
+                        with st.spinner(f"Separating {c_p1} & {c_p2} and re-optimizing..."):
+                            scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                            scheduler.solve()
+                            st.session_state['schedule_grid'] = scheduler.schedule_grid
+                            st.success("Schedule Updated! Conflict rule applied.")
+                            st.rerun()
 
         st.divider()
-        st.subheader("🔒 Locked Shifts Manager")
+        st.markdown("### Active Conflicts")
         
-        locked_shifts = [s for s in grid if s.locked]
-        
-        if not locked_shifts:
-            st.info("No shifts are currently locked.")
+        if not st.session_state['forbidden_pairs']:
+            st.info("No conflict rules active.")
         else:
-            for i, shift in enumerate(locked_shifts):
-                c1, c2, c3 = st.columns([2, 4, 2])
-                with c1:
-                    st.write(f"**{shift.day}**")
-                    st.caption(shift.time_label)
-                with c2:
-                    names = [m.name for m in shift.assigned_members]
-                    st.write(", ".join(names) if names else "(Empty)")
-                with c3:
-                    if st.button("🔓 Unlock", key=f"unlock_{i}_{shift.day}_{shift.time_idx}"):
-                        shift.locked = False
-                        st.success("Unlocked!")
+            for i, pair in enumerate(st.session_state['forbidden_pairs']):
+                col_text, col_del = st.columns([5, 1])
+                with col_text:
+                    st.error(f"🚫 **{pair[0]}** cannot work with **{pair[1]}**")
+                with col_del:
+                    if st.button("🗑️ Remove", key=f"del_conf_{i}"):
+                        st.session_state['forbidden_pairs'].pop(i)
                         st.rerun()

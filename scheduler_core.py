@@ -40,16 +40,11 @@ class Shift:
     def needs_male(self):
         return self.time_idx == 0 or self.time_idx == 3 
 
-    def is_valid(self):
-        if len(self.assigned_members) != 2: return False
-        if self.needs_male():
-            if not any(m.gender == 'Male' for m in self.assigned_members): return False
-        return True
-
 class Scheduler:
-    def __init__(self, members: List[Member], active_days: List[str] = None, pre_filled_grid: List[Shift] = None):
+    def __init__(self, members: List[Member], active_days: List[str] = None, pre_filled_grid: List[Shift] = None, forbidden_pairs: List[Tuple[str, str]] = None):
         self.members = members
         self.active_days = active_days if active_days else ALL_DAYS
+        self.forbidden_pairs = forbidden_pairs if forbidden_pairs else []
         
         if pre_filled_grid:
             self.schedule_grid = pre_filled_grid
@@ -72,41 +67,48 @@ class Scheduler:
         self.max_filled_count = -1
         self.best_grid_state = {}
 
-        # 1. Reset assignments for non-locked members
         for m in self.members:
             m.assigned_shifts = []
 
-        # 2. Re-apply locked assignments
         for shift in self.schedule_grid:
             if shift.locked:
+                restored_members = []
                 for m in shift.assigned_members:
-                    # Find the real member object
                     real_m = next((x for x in self.members if x.name == m.name), None)
                     if real_m:
                         real_m.assigned_shifts.append((shift.day, shift.time_idx))
+                        restored_members.append(real_m)
+                shift.assigned_members = restored_members
             else:
-                shift.assigned_members = [] # Clear non-locked slots
+                shift.assigned_members = []
 
-        unlocked_shifts = [s for s in self.schedule_grid if not s.locked]
+        fully_locked = []
+        partially_locked = []
+        unlocked = []
+
+        for s in self.schedule_grid:
+            if s.locked:
+                if len(s.assigned_members) >= 2: fully_locked.append(s)
+                else: partially_locked.append(s)
+            else:
+                unlocked.append(s)
+
+        def get_difficulty(shift):
+            if len(shift.assigned_members) == 1:
+                return len(self._get_valid_partners(shift, shift.assigned_members[0]))
+            else:
+                return len(self._get_valid_pairs(shift))
+
+        processable = partially_locked + unlocked
+        diff_list = [(get_difficulty(s), s) for s in processable]
+        diff_list.sort(key=lambda x: x[0])
         
-        shift_difficulty = []
-        for shift in unlocked_shifts:
-            valid_pairs = self._get_valid_pairs(shift)
-            shift_difficulty.append((len(valid_pairs), shift))
+        self.schedule_grid = fully_locked + [x[1] for x in diff_list]
         
-        # Sort by most constrained first (fewest valid pairs)
-        shift_difficulty.sort(key=lambda x: x[0])
-        
-        locked_shifts = [s for s in self.schedule_grid if s.locked]
-        self.schedule_grid = locked_shifts + [item[1] for item in shift_difficulty]
-        
-        start_index = len(locked_shifts)
-        
+        start_index = len(fully_locked)
         self._backtrack(start_index)
         
-        # Always restore the best state found
         self._restore_best_state()
-        
         total_slots = len(self.schedule_grid)
         return self.max_filled_count == total_slots
 
@@ -116,33 +118,41 @@ class Scheduler:
 
         current_filled_count = sum(1 for s in self.schedule_grid if len(s.assigned_members) == 2)
         
-        # Save state if it's the best we've seen so far
         if current_filled_count > self.max_filled_count:
             self.max_filled_count = current_filled_count
             self._save_current_state()
 
-        # [FIX] Optimization: Stop immediately if we found a PERFECT schedule
-        if current_filled_count == len(self.schedule_grid):
-            return True
-
-        # [FIX] Logic change: If we reach the end and it's NOT perfect, return False 
-        # to trigger backtracking and search for better solutions.
-        if shift_index >= len(self.schedule_grid): 
-            return False
+        if current_filled_count == len(self.schedule_grid): return True
+        if shift_index >= len(self.schedule_grid): return False
 
         current_shift = self.schedule_grid[shift_index]
-        if current_shift.locked:
+
+        if current_shift.locked and len(current_shift.assigned_members) >= 2:
             return self._backtrack(shift_index + 1)
 
+        if len(current_shift.assigned_members) == 1:
+            existing_member = current_shift.assigned_members[0]
+            partners = self._get_valid_partners(current_shift, existing_member)
+            
+            for p in partners:
+                current_shift.assigned_members.append(p)
+                p.assigned_shifts.append((current_shift.day, current_shift.time_idx))
+                
+                if self._backtrack(shift_index + 1): return True
+                
+                current_shift.assigned_members.pop()
+                p.assigned_shifts.pop()
+            
+            if self._backtrack(shift_index + 1): return True
+            return False
+
         potential_pairs = self._get_valid_pairs(current_shift)
-        
         def pair_score(pair):
             p1, p2 = pair
             score = 0
             if current_shift.day in p1.preferred_days: score += 5
             if current_shift.day in p2.preferred_days: score += 5
             return score
-
         potential_pairs.sort(key=pair_score, reverse=True)
 
         for p1, p2 in potential_pairs:
@@ -156,9 +166,7 @@ class Scheduler:
             p1.assigned_shifts.pop()
             p2.assigned_shifts.pop()
             
-        # Try skipping this shift (leave it empty) to see if better assignments exist down the line
         if self._backtrack(shift_index + 1): return True
-
         return False
 
     def _save_current_state(self):
@@ -169,44 +177,52 @@ class Scheduler:
         self.best_grid_state = state
 
     def _restore_best_state(self):
-        # 1. Clear ALL assignments first
-        for m in self.members:
-            m.assigned_shifts = []
-
-        # 2. Re-apply locked assignments
+        for m in self.members: m.assigned_shifts = []
         for shift in self.schedule_grid:
-            if shift.locked:
-                for m in shift.assigned_members:
-                    real_m = next((x for x in self.members if x.name == m.name), None)
-                    if real_m: real_m.assigned_shifts.append((shift.day, shift.time_idx))
-
-        # 3. Apply best state to unlocked shifts
-        for shift in self.schedule_grid:
-            if shift.locked: continue
-            
             saved_names = self.best_grid_state.get((shift.day, shift.time_idx), [])
-            restored_members = []
+            restored = []
             for name in saved_names:
                 mem = next((m for m in self.members if m.name == name), None)
                 if mem: 
-                    restored_members.append(mem)
+                    restored.append(mem)
                     mem.assigned_shifts.append((shift.day, shift.time_idx))
-            shift.assigned_members = restored_members
+            shift.assigned_members = restored
+
+    def _is_pair_forbidden(self, p1_name: str, p2_name: str) -> bool:
+        for f1, f2 in self.forbidden_pairs:
+            if (p1_name == f1 and p2_name == f2) or (p1_name == f2 and p2_name == f1):
+                return True
+        return False
 
     def _get_valid_pairs(self, shift: Shift):
         available_people = [
             m for m in self.members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0
         ]
-        
         valid_pairs = []
         from itertools import combinations
         for p1, p2 in combinations(available_people, 2):
+            if self._is_pair_forbidden(p1.name, p2.name): continue
             if shift.needs_male():
                 if p1.gender != 'Male' and p2.gender != 'Male': continue
             valid_pairs.append((p1, p2))
         return valid_pairs
 
+    def _get_valid_partners(self, shift: Shift, current_member: Member):
+        available_people = [
+            m for m in self.members 
+            if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0 and m.name != current_member.name
+        ]
+        valid_partners = []
+        for p in available_people:
+            if self._is_pair_forbidden(current_member.name, p.name): continue
+            if shift.needs_male():
+                if current_member.gender != 'Male' and p.gender != 'Male': continue
+            valid_partners.append(p)
+        valid_partners.sort(key=lambda m: 1 if shift.day in m.preferred_days else 0, reverse=True)
+        return valid_partners
+
+# (Other utils remain the same as previous step...)
 def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> List[Dict]:
     ranked_slots = []
     for day in active_days:
@@ -228,20 +244,6 @@ def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> 
                 ranked_slots.append({"day": day, "time_idx": time_idx, "time_label": time_label, "score": score, "reason": ", ".join(reasons)})
     ranked_slots.sort(key=lambda x: x['score'], reverse=True)
     return ranked_slots
-
-def check_assignment_validity(member: Member, shift_day: str, shift_time_idx: int, current_partners: List[Member]) -> Dict:
-    status = {"valid": True, "warnings": [], "errors": []}
-    if not member.is_available(shift_day, shift_time_idx):
-        status["warnings"].append("Not marked as available.")
-        status["valid"] = False 
-    if len(member.assigned_shifts) > 0:
-         for s_day, s_time in member.assigned_shifts:
-             if s_day == shift_day and s_time == shift_time_idx: status["errors"].append("Already assigned to this slot.")
-             else: status["warnings"].append(f"Already working on {s_day} (2nd shift).")
-    if (shift_time_idx == 0 or shift_time_idx == 3) and member.gender != 'Male' and not any(p.gender == 'Male' for p in current_partners if p.name != member.name):
-        status["warnings"].append("Shift requires a Male.")
-    if shift_day in member.preferred_days: status["warnings"].append("✅ Matches User Preference!")
-    return status
 
 def parse_file(file_obj) -> List[Member]:
     try:
@@ -265,7 +267,6 @@ def parse_file(file_obj) -> List[Member]:
         elif "friday" in c_lower: col_map["Friday"] = col
     
     members_map = {} 
-    
     for idx, row in df.iterrows():
         if "name" not in col_map: break 
         name = str(row[col_map["name"]]).strip()
@@ -285,15 +286,11 @@ def parse_file(file_obj) -> List[Member]:
             for t_str, t_idx in TIME_SLOTS.items():
                 if t_str.replace(" ","") in val.replace(" ",""): day_idx.append(t_idx)
             if day_idx: availability[day] = day_idx
-            
         members_map[name] = Member(name, gender, availability, avoid_open, avoid_close, pref_days)
-        
     return list(members_map.values())
 
 def generate_excel_bytes(schedule_grid, active_days, all_members=None):
     output = io.BytesIO()
-    
-    # --- SHEET 1: SCHEDULE ---
     data_rows = []
     def sort_order(shift):
         d_map = {day: i for i, day in enumerate(ALL_DAYS)}
@@ -324,20 +321,17 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
     cols = ["Time"] + active_days
     df_schedule = df_schedule[cols]
     
-    # --- SHEET 2: UNASSIGNED MEMBERS ---
     unassigned_rows = []
     if all_members:
         idx_to_label = {v: k for k, v in TIME_SLOTS.items()}
         for m in all_members:
             if m.name not in assigned_names:
                 avail_count = sum(len(v) for v in m.availability.values())
-                
                 avail_parts = []
                 for day, slots in m.availability.items():
                     if slots:
                         labels = [idx_to_label.get(s, "?") for s in sorted(slots)]
                         avail_parts.append(f"{day}: {', '.join(labels)}")
-                
                 unassigned_rows.append({
                     "Name": m.name,
                     "Gender": m.gender,
