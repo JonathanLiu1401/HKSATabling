@@ -5,11 +5,45 @@ import copy
 
 st.set_page_config(page_title="HKSA Scheduler", page_icon="📅", layout="wide")
 
+def apply_config_callback():
+    """
+    Called immediately when a file is uploaded, BEFORE the rest of the app runs.
+    This allows us to update widget states safely.
+    """
+    uploaded_file = st.session_state.get('config_loader') # Access via key
+    
+    if uploaded_file and st.session_state.get('members'):
+        try:
+            # 1. Clear current assignments
+            for m in st.session_state['members']:
+                m.assigned_shifts = []
+
+            # 2. Load and Parse
+            a_days, f_pairs, new_grid = core.load_configuration(
+                uploaded_file.getvalue(), 
+                st.session_state['members']
+            )
+            
+            # 3. Update Session State
+            st.session_state['active_days_selection'] = a_days  
+            st.session_state['active_days'] = a_days
+            st.session_state['forbidden_pairs'] = f_pairs
+            st.session_state['schedule_grid'] = new_grid
+            st.session_state['top_schedules'] = [] # Reset tops on manual load (config file doesn't store alternatives)
+            
+        except Exception as e:
+            st.error(f"Error applying config: {e}")
+
 if 'members' not in st.session_state: st.session_state['members'] = []
 if 'schedule_grid' not in st.session_state: st.session_state['schedule_grid'] = []
+# Initialize the widget key for active days if not present
+if 'active_days_selection' not in st.session_state: st.session_state['active_days_selection'] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 if 'active_days' not in st.session_state: st.session_state['active_days'] = []
 if 'editor_selected_slot' not in st.session_state: st.session_state['editor_selected_slot'] = None
 if 'forbidden_pairs' not in st.session_state: st.session_state['forbidden_pairs'] = []
+# NEW: Store top schedule options
+if 'top_schedules' not in st.session_state: st.session_state['top_schedules'] = []
+if 'file_hash' not in st.session_state: st.session_state['file_hash'] = 0
 
 st.title("📅 HKSA Tabling Scheduler Pro")
 
@@ -17,39 +51,78 @@ st.title("📅 HKSA Tabling Scheduler Pro")
 with st.sidebar:
     st.header("1. Configuration")
     all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    selected_days = st.multiselect("Active Days:", all_days, default=all_days)
+    selected_days = st.multiselect("Active Days:", all_days, key="active_days_selection")
     st.session_state['active_days'] = selected_days
     
     st.header("2. Upload Data")
     uploaded_file = st.file_uploader("Upload Availability.csv", type=["csv", "xlsx"])
     
     if uploaded_file:
-        try:
-            members = core.parse_file(uploaded_file)
-            st.session_state['members'] = members
-            st.success(f"Loaded {len(members)} members")
-        except Exception as e:
-            st.error(f"Error parsing: {e}")
+        # Calculate a simple hash to detect if this is a NEW file upload or just a rerun
+        current_hash = hash(uploaded_file.getvalue())
+        if current_hash != st.session_state['file_hash']:
+            st.session_state['file_hash'] = current_hash
+            try:
+                members = core.parse_file(uploaded_file)
+                st.session_state['members'] = members
+                st.session_state['top_schedules'] = [] # Only clear on NEW file
+                st.session_state['schedule_grid'] = []
+                st.success(f"Loaded {len(members)} members")
+            except Exception as e:
+                st.error(f"Error parsing: {e}")
+        elif st.session_state['members']:
+            st.info(f"Loaded {len(st.session_state['members'])} members")
 
     st.header("3. Actions")
     if st.button("🚀 Auto-Generate Schedule", type="primary"):
         if not st.session_state['members']:
             st.error("Upload data first!")
         else:
-            with st.spinner("Solving..."):
-                # Pass forbidden_pairs to scheduler
+            with st.spinner("Solving (Finding up to 50)..."):
                 scheduler = core.Scheduler(
                     st.session_state['members'], 
                     active_days=selected_days, 
                     forbidden_pairs=st.session_state['forbidden_pairs']
                 )
-                success = scheduler.solve()
+                success_count = scheduler.solve()
                 st.session_state['schedule_grid'] = scheduler.schedule_grid
+                st.session_state['top_schedules'] = scheduler.top_schedules 
                 st.session_state['editor_selected_slot'] = None 
-                if success: st.success("Perfect schedule found!")
-                else: st.warning("Could not find a perfect fit. Partial schedule generated.")
+                
+                if success_count > 0: 
+                    st.success(f"Found {success_count} valid schedules!")
+                else: 
+                    st.warning("Could not find a perfect fit. Displaying best partial schedule.")
 
-# --- HELPER FUNCTIONS (unchanged) ---
+    # --- SAVE/LOAD ---
+    st.divider()
+    st.header("4. Save/Load Config")
+    
+    if st.session_state['schedule_grid']:
+        config_json = core.export_configuration(
+            st.session_state['schedule_grid'],
+            st.session_state['forbidden_pairs'],
+            st.session_state['active_days']
+        )
+        st.download_button(
+            label="💾 Save Configuration",
+            data=config_json,
+            file_name="hksa_scheduler_config.json",
+            mime="application/json",
+            help="Download a file containing the current schedule, locks, and conflict rules."
+        )
+
+    st.file_uploader(
+        "Load Config (.json)", 
+        type=["json"], 
+        key="config_loader", 
+        on_change=apply_config_callback
+    )
+
+    if st.session_state.get('config_loader') and not st.session_state.get('members'):
+        st.warning("⚠️ Please upload the Availability CSV first!")
+
+# --- HELPER FUNCTIONS ---
 def get_member_options(day, time_idx, current_shift_members):
     options = []
     current_names = [m.name for m in current_shift_members]
@@ -164,6 +237,40 @@ else:
 
     # --- TAB 2: EDITOR (GRID) ---
     with tab2:
+        # --- NEW: SCHEDULE SELECTOR (WITH SCORING EXPLANATION) ---
+        if st.session_state.get('top_schedules'):
+            count = len(st.session_state['top_schedules'])
+            display_count = "50" if count > 50 else str(count)
+            count_label = ">50" if count > 50 else str(count)
+            
+            with st.expander(f"💎 Generated Options ({count_label} found)", expanded=True):
+                st.caption("ℹ️ **Scoring System:** +5 points for every member assigned to a 'Preferred Day'. Higher score = More preferences met.")
+                
+                # Limit options to 50 for the dropdown to avoid UI lag
+                opts = range(min(count, 50))
+                
+                # Helper to display label in dropdown
+                def fmt_func(idx):
+                    s = st.session_state['top_schedules'][idx]
+                    return f"Option {idx+1} (Score: {s['score']})"
+                
+                c_sel, c_btn = st.columns([3, 1])
+                with c_sel:
+                    selected_opt_idx = st.selectbox("Select Version to Load:", opts, format_func=fmt_func)
+                with c_btn:
+                    st.write("") # spacer
+                    if st.button("🔄 Apply Option"):
+                        # Load the selected state
+                        target_state = st.session_state['top_schedules'][selected_opt_idx]['state']
+                        # Use the core logic to restore
+                        scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid)
+                        scheduler.restore_state(target_state)
+                        st.session_state['schedule_grid'] = scheduler.schedule_grid
+                        st.session_state['editor_selected_slot'] = None
+                        st.success(f"Applied Option {selected_opt_idx+1}!")
+                        st.rerun()
+            st.divider()
+
         st.markdown("### 👆 Select a slot to edit")
         cols_config = [0.8] + [1 for _ in selected_days]
         header_cols = st.columns(cols_config)
@@ -205,16 +312,21 @@ else:
                     
                     c_sel1, c_sel2 = st.columns(2)
                     with c_sel1:
-                        opts1 = get_member_options(sel_day, sel_time_idx, target_shift.assigned_members)
+                        exclude_1 = [current_p1] if current_p1 else []
+                        opts1 = get_member_options(sel_day, sel_time_idx, exclude_1)
+                        
                         opts1.insert(0, "(Unfilled)")
                         if current_p1: opts1.insert(0, f"👤 {current_p1.name}")
                         sel1 = st.selectbox("Slot 1 Member", opts1, key="p1_ed")
+                        
                     with c_sel2:
-                        opts2 = get_member_options(sel_day, sel_time_idx, target_shift.assigned_members)
+                        exclude_2 = [current_p2] if current_p2 else []
+                        opts2 = get_member_options(sel_day, sel_time_idx, exclude_2)
+                        
                         opts2.insert(0, "(Unfilled)")
                         if current_p2: opts2.insert(0, f"👤 {current_p2.name}")
                         sel2 = st.selectbox("Slot 2 Member", opts2, key="p2_ed")
-
+                        
                     st.write("")
                     b_col1, b_col2 = st.columns(2)
                     with b_col1:
@@ -256,6 +368,7 @@ else:
                                     scheduler = core.Scheduler(st.session_state['members'], active_days=st.session_state['active_days'], pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
+                                    st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
                                     st.success("Locked and Rerolled!")
                                     st.rerun()
         else: st.info("Select a slot from the grid above to start editing.")
@@ -291,6 +404,7 @@ else:
                                     scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
+                                    st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
                                     st.rerun()
 
     # --- TAB 4: CONFLICT MANAGER (NEW) ---
@@ -318,6 +432,7 @@ else:
                             scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
                             scheduler.solve()
                             st.session_state['schedule_grid'] = scheduler.schedule_grid
+                            st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
                             st.success("Schedule Updated! Conflict rule applied.")
                             st.rerun()
 

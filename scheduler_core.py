@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 import io
 import copy
+import json
 
 # --- CONSTANTS ---
 TIME_SLOTS = {
@@ -54,6 +55,7 @@ class Scheduler:
         self.attempts = 0
         self.best_grid_state = {} 
         self.max_filled_count = -1
+        self.top_schedules = [] 
 
     def _initialize_grid(self) -> List[Shift]:
         grid = []
@@ -62,14 +64,17 @@ class Scheduler:
                 grid.append(Shift(day, idx, label))
         return grid
 
-    def solve(self) -> bool:
+    def solve(self) -> int:
         self.attempts = 0
         self.max_filled_count = -1
         self.best_grid_state = {}
+        self.top_schedules = []
 
+        # Clear assignments
         for m in self.members:
             m.assigned_shifts = []
 
+        # Restore locks
         for shift in self.schedule_grid:
             if shift.locked:
                 restored_members = []
@@ -106,23 +111,56 @@ class Scheduler:
         self.schedule_grid = fully_locked + [x[1] for x in diff_list]
         
         start_index = len(fully_locked)
-        self._backtrack(start_index)
         
-        self._restore_best_state()
-        total_slots = len(self.schedule_grid)
-        return self.max_filled_count == total_slots
+        try:
+            self._backtrack(start_index)
+        except StopIteration:
+            pass 
+
+        if self.top_schedules:
+            # Sort by score descending (Best first)
+            self.top_schedules.sort(key=lambda x: x['score'], reverse=True)
+            # Restore the best one by default
+            self.restore_state(self.top_schedules[0]['state'])
+            return len(self.top_schedules)
+        else:
+            # No full solution, restore best partial
+            self.restore_state(self.best_grid_state)
+            return 0
 
     def _backtrack(self, shift_index: int) -> bool:
         self.attempts += 1
-        if self.attempts > 500000: return False 
+        # Hard limit to prevent browser hanging (approx 2-3 seconds of compute)
+        if self.attempts > 1000000: 
+            raise StopIteration 
 
         current_filled_count = sum(1 for s in self.schedule_grid if len(s.assigned_members) == 2)
         
+        # Save best PARTIAL solution
         if current_filled_count > self.max_filled_count:
             self.max_filled_count = current_filled_count
-            self._save_current_state()
+            self.best_grid_state = self._capture_state()
 
-        if current_filled_count == len(self.schedule_grid): return True
+        # SUCCESS: Found a full schedule
+        if current_filled_count == len(self.schedule_grid):
+            # Calculate Score
+            score = 0
+            for s in self.schedule_grid:
+                for m in s.assigned_members:
+                    if s.day in m.preferred_days: score += 5
+            
+            self.top_schedules.append({
+                "state": self._capture_state(),
+                "score": score,
+                "description": f"Full Schedule (Score: {score})"
+            })
+            
+            # CHECK LIMIT: Stop if we found 51 (so we can say ">50")
+            if len(self.top_schedules) >= 51:
+                raise StopIteration
+            
+            return False # Return False to force backtracking to find MORE solutions
+
         if shift_index >= len(self.schedule_grid): return False
 
         current_shift = self.schedule_grid[shift_index]
@@ -130,6 +168,7 @@ class Scheduler:
         if current_shift.locked and len(current_shift.assigned_members) >= 2:
             return self._backtrack(shift_index + 1)
 
+        # CASE 1: 1 Person Assigned (Partial Lock)
         if len(current_shift.assigned_members) == 1:
             existing_member = current_shift.assigned_members[0]
             partners = self._get_valid_partners(current_shift, existing_member)
@@ -138,15 +177,15 @@ class Scheduler:
                 current_shift.assigned_members.append(p)
                 p.assigned_shifts.append((current_shift.day, current_shift.time_idx))
                 
-                if self._backtrack(shift_index + 1): return True
+                self._backtrack(shift_index + 1)
                 
                 current_shift.assigned_members.pop()
                 p.assigned_shifts.pop()
-            
-            if self._backtrack(shift_index + 1): return True
             return False
 
+        # CASE 2: Empty Slot
         potential_pairs = self._get_valid_pairs(current_shift)
+        # Sort by preference score to find high-quality schedules first
         def pair_score(pair):
             p1, p2 = pair
             score = 0
@@ -160,26 +199,25 @@ class Scheduler:
             p1.assigned_shifts.append((current_shift.day, current_shift.time_idx))
             p2.assigned_shifts.append((current_shift.day, current_shift.time_idx))
             
-            if self._backtrack(shift_index + 1): return True
+            self._backtrack(shift_index + 1) 
             
             current_shift.assigned_members = []
             p1.assigned_shifts.pop()
             p2.assigned_shifts.pop()
             
-        if self._backtrack(shift_index + 1): return True
         return False
 
-    def _save_current_state(self):
+    def _capture_state(self):
         state = {}
         for shift in self.schedule_grid:
             names = [m.name for m in shift.assigned_members]
             state[(shift.day, shift.time_idx)] = names
-        self.best_grid_state = state
+        return state
 
-    def _restore_best_state(self):
+    def restore_state(self, state_dict):
         for m in self.members: m.assigned_shifts = []
         for shift in self.schedule_grid:
-            saved_names = self.best_grid_state.get((shift.day, shift.time_idx), [])
+            saved_names = state_dict.get((shift.day, shift.time_idx), [])
             restored = []
             for name in saved_names:
                 mem = next((m for m in self.members if m.name == name), None)
@@ -222,7 +260,7 @@ class Scheduler:
         valid_partners.sort(key=lambda m: 1 if shift.day in m.preferred_days else 0, reverse=True)
         return valid_partners
 
-# (Other utils remain the same as previous step...)
+# --- UTILS (Unchanged) ---
 def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> List[Dict]:
     ranked_slots = []
     for day in active_days:
@@ -353,11 +391,63 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
         else:
             pd.DataFrame({"Status": ["All members assigned!"]}).to_excel(writer, index=False, sheet_name='Unassigned Members')
         
-        workbook = writer.book
-        worksheet = workbook.add_worksheet('Legend')
-        worksheet.write(0, 0, "(*) Name")
-        worksheet.write(0, 1, "Suggested because no perfect match found.")
-        worksheet.write(1, 0, "(* 2nd Shift)")
-        worksheet.write(1, 1, "Already assigned elsewhere (2nd shift).")
-
     return output.getvalue()
+
+def export_configuration(schedule_grid, forbidden_pairs, active_days):
+    """Serializes the current schedule state to a JSON string."""
+    grid_data = []
+    for shift in schedule_grid:
+        grid_data.append({
+            "day": shift.day,
+            "time_idx": shift.time_idx,
+            "locked": shift.locked,
+            "assigned": [m.name for m in shift.assigned_members]
+        })
+    
+    return json.dumps({
+        "active_days": active_days,
+        "forbidden_pairs": forbidden_pairs,
+        "grid": grid_data
+    }, indent=2)
+
+def load_configuration(json_content, all_members):
+    """
+    Parses a JSON string and reconstructs the grid state.
+    Requires existing Member objects (from CSV) to link assignments correctly.
+    """
+    data = json.loads(json_content)
+    
+    # 1. Restore Metadata
+    active_days = data.get("active_days", ALL_DAYS)
+    forbidden_pairs = [tuple(p) for p in data.get("forbidden_pairs", [])]
+    
+    # 2. Map existing member objects by name for quick lookup
+    member_map = {m.name: m for m in all_members}
+    
+    # 3. Reconstruct Grid
+    new_grid = []
+    grid_data = data.get("grid", [])
+    
+    for slot_data in grid_data:
+        day = slot_data["day"]
+        time_idx = slot_data["time_idx"]
+        # Retrieve label from constants
+        time_label = next((k for k, v in TIME_SLOTS.items() if v == time_idx), "Unknown")
+        
+        new_shift = Shift(day, time_idx, time_label)
+        new_shift.locked = slot_data["locked"]
+        
+        # Restore assignments using actual Member objects
+        restored_members = []
+        for name in slot_data["assigned"]:
+            if name in member_map:
+                member = member_map[name]
+                restored_members.append(member)
+                # Update member's internal state to reflect they are working this slot
+                if (day, time_idx) not in member.assigned_shifts:
+                    member.assigned_shifts.append((day, time_idx))
+        
+        new_shift.assigned_members = restored_members
+        new_grid.append(new_shift)
+        
+    return active_days, forbidden_pairs, new_grid
