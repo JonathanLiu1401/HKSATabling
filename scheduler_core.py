@@ -42,10 +42,16 @@ class Shift:
         return self.time_idx == 0 or self.time_idx == 3 
 
 class Scheduler:
-    def __init__(self, members: List[Member], active_days: List[str] = None, pre_filled_grid: List[Shift] = None, forbidden_pairs: List[Tuple[str, str]] = None):
+    def __init__(self, members: List[Member], active_days: List[str] = None, 
+                 pre_filled_grid: List[Shift] = None, forbidden_pairs: List[Tuple[str, str]] = None,
+                 must_schedule: List[str] = None, never_schedule: List[str] = None):
         self.members = members
         self.active_days = active_days if active_days else ALL_DAYS
         self.forbidden_pairs = forbidden_pairs if forbidden_pairs else []
+        
+        # --- NEW CONSTRAINTS ---
+        self.must_schedule = must_schedule if must_schedule else []
+        self.never_schedule = never_schedule if never_schedule else []
         
         if pre_filled_grid:
             self.schedule_grid = pre_filled_grid
@@ -55,7 +61,10 @@ class Scheduler:
         self.attempts = 0
         self.best_grid_state = {} 
         self.max_filled_count = -1
-        self.top_schedules = [] 
+        self.top_schedules = []
+        
+        # Filter active members for solving
+        self.working_members = [m for m in self.members if m.name not in self.never_schedule]
 
     def _initialize_grid(self) -> List[Shift]:
         grid = []
@@ -79,6 +88,7 @@ class Scheduler:
             if shift.locked:
                 restored_members = []
                 for m in shift.assigned_members:
+                    # Find member in the full list
                     real_m = next((x for x in self.members if x.name == m.name), None)
                     if real_m:
                         real_m.assigned_shifts.append((shift.day, shift.time_idx))
@@ -120,29 +130,36 @@ class Scheduler:
         if self.top_schedules:
             # Sort by score descending (Best first)
             self.top_schedules.sort(key=lambda x: x['score'], reverse=True)
-            # Restore the best one by default
             self.restore_state(self.top_schedules[0]['state'])
             return len(self.top_schedules)
         else:
-            # No full solution, restore best partial
             self.restore_state(self.best_grid_state)
             return 0
 
     def _backtrack(self, shift_index: int) -> bool:
         self.attempts += 1
-        # Hard limit to prevent browser hanging (approx 2-3 seconds of compute)
         if self.attempts > 1000000: 
             raise StopIteration 
 
         current_filled_count = sum(1 for s in self.schedule_grid if len(s.assigned_members) == 2)
         
-        # Save best PARTIAL solution
         if current_filled_count > self.max_filled_count:
             self.max_filled_count = current_filled_count
             self.best_grid_state = self._capture_state()
 
         # SUCCESS: Found a full schedule
         if current_filled_count == len(self.schedule_grid):
+            # --- NEW VALIDATION: Check Must Schedule ---
+            assigned_names = set()
+            for s in self.schedule_grid:
+                for m in s.assigned_members:
+                    assigned_names.add(m.name)
+            
+            # If any "must schedule" person is missing, REJECT this solution
+            for must_name in self.must_schedule:
+                if must_name not in assigned_names:
+                    return False # Force backtrack to find a solution that includes them
+            
             # Calculate Score
             score = 0
             for s in self.schedule_grid:
@@ -155,11 +172,10 @@ class Scheduler:
                 "description": f"Full Schedule (Score: {score})"
             })
             
-            # CHECK LIMIT: Stop if we found 51 (so we can say ">50")
             if len(self.top_schedules) >= 51:
                 raise StopIteration
             
-            return False # Return False to force backtracking to find MORE solutions
+            return False 
 
         if shift_index >= len(self.schedule_grid): return False
 
@@ -185,13 +201,20 @@ class Scheduler:
 
         # CASE 2: Empty Slot
         potential_pairs = self._get_valid_pairs(current_shift)
-        # Sort by preference score to find high-quality schedules first
+        
+        # --- UPDATED SORTING LOGIC ---
         def pair_score(pair):
             p1, p2 = pair
             score = 0
+            # Huge bonus for scheduling "Must Schedule" people
+            if p1.name in self.must_schedule: score += 1000
+            if p2.name in self.must_schedule: score += 1000
+            
+            # Normal preference points
             if current_shift.day in p1.preferred_days: score += 5
             if current_shift.day in p2.preferred_days: score += 5
             return score
+            
         potential_pairs.sort(key=pair_score, reverse=True)
 
         for p1, p2 in potential_pairs:
@@ -233,8 +256,9 @@ class Scheduler:
         return False
 
     def _get_valid_pairs(self, shift: Shift):
+        # Only use self.working_members (which excludes the "Never Schedule" people)
         available_people = [
-            m for m in self.members 
+            m for m in self.working_members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0
         ]
         valid_pairs = []
@@ -247,8 +271,9 @@ class Scheduler:
         return valid_pairs
 
     def _get_valid_partners(self, shift: Shift, current_member: Member):
+        # Only use self.working_members
         available_people = [
-            m for m in self.members 
+            m for m in self.working_members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0 and m.name != current_member.name
         ]
         valid_partners = []
@@ -260,7 +285,7 @@ class Scheduler:
         valid_partners.sort(key=lambda m: 1 if shift.day in m.preferred_days else 0, reverse=True)
         return valid_partners
 
-# --- UTILS (Unchanged) ---
+# --- EXISTING UTILS (Unchanged) ---
 def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> List[Dict]:
     ranked_slots = []
     for day in active_days:
@@ -393,7 +418,7 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
         
     return output.getvalue()
 
-def export_configuration(schedule_grid, forbidden_pairs, active_days):
+def export_configuration(schedule_grid, forbidden_pairs, active_days, must_schedule=None, never_schedule=None):
     """Serializes the current schedule state to a JSON string."""
     grid_data = []
     for shift in schedule_grid:
@@ -407,19 +432,22 @@ def export_configuration(schedule_grid, forbidden_pairs, active_days):
     return json.dumps({
         "active_days": active_days,
         "forbidden_pairs": forbidden_pairs,
+        "must_schedule": must_schedule if must_schedule else [],
+        "never_schedule": never_schedule if never_schedule else [],
         "grid": grid_data
     }, indent=2)
 
 def load_configuration(json_content, all_members):
     """
     Parses a JSON string and reconstructs the grid state.
-    Requires existing Member objects (from CSV) to link assignments correctly.
     """
     data = json.loads(json_content)
     
     # 1. Restore Metadata
     active_days = data.get("active_days", ALL_DAYS)
     forbidden_pairs = [tuple(p) for p in data.get("forbidden_pairs", [])]
+    must_schedule = data.get("must_schedule", [])
+    never_schedule = data.get("never_schedule", [])
     
     # 2. Map existing member objects by name for quick lookup
     member_map = {m.name: m for m in all_members}
@@ -450,4 +478,4 @@ def load_configuration(json_content, all_members):
         new_shift.assigned_members = restored_members
         new_grid.append(new_shift)
         
-    return active_days, forbidden_pairs, new_grid
+    return active_days, forbidden_pairs, must_schedule, never_schedule, new_grid

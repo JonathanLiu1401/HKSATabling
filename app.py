@@ -18,8 +18,8 @@ def apply_config_callback():
             for m in st.session_state['members']:
                 m.assigned_shifts = []
 
-            # 2. Load and Parse
-            a_days, f_pairs, new_grid = core.load_configuration(
+            # 2. Load and Parse (UPDATED)
+            a_days, f_pairs, must_s, never_s, new_grid = core.load_configuration(
                 uploaded_file.getvalue(), 
                 st.session_state['members']
             )
@@ -28,8 +28,10 @@ def apply_config_callback():
             st.session_state['active_days_selection'] = a_days  
             st.session_state['active_days'] = a_days
             st.session_state['forbidden_pairs'] = f_pairs
+            st.session_state['must_schedule'] = must_s
+            st.session_state['never_schedule'] = never_s
             st.session_state['schedule_grid'] = new_grid
-            st.session_state['top_schedules'] = [] # Reset tops on manual load (config file doesn't store alternatives)
+            st.session_state['top_schedules'] = [] # Reset tops on manual load
             
         except Exception as e:
             st.error(f"Error applying config: {e}")
@@ -41,9 +43,11 @@ if 'active_days_selection' not in st.session_state: st.session_state['active_day
 if 'active_days' not in st.session_state: st.session_state['active_days'] = []
 if 'editor_selected_slot' not in st.session_state: st.session_state['editor_selected_slot'] = None
 if 'forbidden_pairs' not in st.session_state: st.session_state['forbidden_pairs'] = []
-# NEW: Store top schedule options
 if 'top_schedules' not in st.session_state: st.session_state['top_schedules'] = []
 if 'file_hash' not in st.session_state: st.session_state['file_hash'] = 0
+# NEW: Participation Constraints
+if 'must_schedule' not in st.session_state: st.session_state['must_schedule'] = []
+if 'never_schedule' not in st.session_state: st.session_state['never_schedule'] = []
 
 st.title("📅 HKSA Tabling Scheduler Pro")
 
@@ -58,14 +62,13 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Availability.csv", type=["csv", "xlsx"])
     
     if uploaded_file:
-        # Calculate a simple hash to detect if this is a NEW file upload or just a rerun
         current_hash = hash(uploaded_file.getvalue())
         if current_hash != st.session_state['file_hash']:
             st.session_state['file_hash'] = current_hash
             try:
                 members = core.parse_file(uploaded_file)
                 st.session_state['members'] = members
-                st.session_state['top_schedules'] = [] # Only clear on NEW file
+                st.session_state['top_schedules'] = [] 
                 st.session_state['schedule_grid'] = []
                 st.success(f"Loaded {len(members)} members")
             except Exception as e:
@@ -78,11 +81,14 @@ with st.sidebar:
         if not st.session_state['members']:
             st.error("Upload data first!")
         else:
-            with st.spinner("Solving (Finding up to 50)..."):
+            with st.spinner("Solving..."):
+                # PASS NEW LISTS TO SCHEDULER
                 scheduler = core.Scheduler(
                     st.session_state['members'], 
                     active_days=selected_days, 
-                    forbidden_pairs=st.session_state['forbidden_pairs']
+                    forbidden_pairs=st.session_state['forbidden_pairs'],
+                    must_schedule=st.session_state['must_schedule'],
+                    never_schedule=st.session_state['never_schedule']
                 )
                 success_count = scheduler.solve()
                 st.session_state['schedule_grid'] = scheduler.schedule_grid
@@ -92,7 +98,7 @@ with st.sidebar:
                 if success_count > 0: 
                     st.success(f"Found {success_count} valid schedules!")
                 else: 
-                    st.warning("Could not find a perfect fit. Displaying best partial schedule.")
+                    st.warning("Could not find a valid schedule with these constraints. (Try removing 'Must Schedule' requirements)")
 
     # --- SAVE/LOAD ---
     st.divider()
@@ -102,14 +108,16 @@ with st.sidebar:
         config_json = core.export_configuration(
             st.session_state['schedule_grid'],
             st.session_state['forbidden_pairs'],
-            st.session_state['active_days']
+            st.session_state['active_days'],
+            st.session_state['must_schedule'], # EXPORT NEW
+            st.session_state['never_schedule'] # EXPORT NEW
         )
         st.download_button(
             label="💾 Save Configuration",
             data=config_json,
             file_name="hksa_scheduler_config.json",
             mime="application/json",
-            help="Download a file containing the current schedule, locks, and conflict rules."
+            help="Download a file containing the current schedule, locks, conflict rules, and participation constraints."
         )
 
     st.file_uploader(
@@ -126,7 +134,10 @@ with st.sidebar:
 def get_member_options(day, time_idx, current_shift_members):
     options = []
     current_names = [m.name for m in current_shift_members]
-    for m in st.session_state['members']:
+    # Filter out "Never Schedule" people from editor options
+    active_members = [m for m in st.session_state['members'] if m.name not in st.session_state['never_schedule']]
+    
+    for m in active_members:
         label = m.name
         is_assigned_here = any(curr_name == m.name or curr_name.endswith(f" {m.name}") for curr_name in current_names)
         is_free = m.is_available(day, time_idx)
@@ -186,10 +197,11 @@ def select_slot(day, time_idx):
 if not st.session_state['schedule_grid']:
     st.info("👈 Upload your file and click 'Auto-Generate' to start.")
 else:
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 View", "✏️ Live Editor (Grid)", "Partner Matcher", "Conflict Manager"])
+    # --- UPDATED TABS ---
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 View", "✏️ Live Editor (Grid)", "Partner Matcher", "Conflict Manager", "🛑 Participation Manager"])
     grid = st.session_state['schedule_grid']
     
-    # --- TAB 1: VIEW ---
+    # --- TAB 1: VIEW (Unchanged) ---
     with tab1:
         st.subheader("Tabling Schedule")
         data_rows = []
@@ -219,7 +231,7 @@ else:
         unassigned_data = []
         idx_to_label = {v: k for k, v in core.TIME_SLOTS.items()}
         for m in st.session_state['members']:
-            if m.name not in assigned_names:
+            if m.name not in assigned_names and m.name not in st.session_state['never_schedule']:
                 total_avail = sum(len(v) for v in m.availability.values())
                 avail_parts = []
                 for day, slots in m.availability.items():
@@ -233,23 +245,19 @@ else:
         if unassigned_data:
             st.dataframe(pd.DataFrame(unassigned_data).sort_values(by="Slots Free", ascending=False), use_container_width=True, hide_index=True)
         else:
-            st.success("🎉 All members assigned!")
+            st.success("🎉 All (active) members assigned!")
 
     # --- TAB 2: EDITOR (GRID) ---
     with tab2:
-        # --- NEW: SCHEDULE SELECTOR (WITH SCORING EXPLANATION) ---
         if st.session_state.get('top_schedules'):
             count = len(st.session_state['top_schedules'])
             display_count = "50" if count > 50 else str(count)
             count_label = ">50" if count > 50 else str(count)
             
             with st.expander(f"💎 Generated Options ({count_label} found)", expanded=True):
-                st.caption("ℹ️ **Scoring System:** +5 points for every member assigned to a 'Preferred Day'. Higher score = More preferences met.")
+                st.caption("ℹ️ **Scoring:** +1000 for 'Must Schedule' met, +5 for Preferred Day.")
                 
-                # Limit options to 50 for the dropdown to avoid UI lag
                 opts = range(min(count, 50))
-                
-                # Helper to display label in dropdown
                 def fmt_func(idx):
                     s = st.session_state['top_schedules'][idx]
                     return f"Option {idx+1} (Score: {s['score']})"
@@ -258,11 +266,9 @@ else:
                 with c_sel:
                     selected_opt_idx = st.selectbox("Select Version to Load:", opts, format_func=fmt_func)
                 with c_btn:
-                    st.write("") # spacer
+                    st.write("") 
                     if st.button("🔄 Apply Option"):
-                        # Load the selected state
                         target_state = st.session_state['top_schedules'][selected_opt_idx]['state']
-                        # Use the core logic to restore
                         scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid)
                         scheduler.restore_state(target_state)
                         st.session_state['schedule_grid'] = scheduler.schedule_grid
@@ -365,10 +371,10 @@ else:
                                 with st.spinner("Locking and re-optimizing..."):
                                     perform_overwrite_assign(target_shift, new_members)
                                     target_shift.locked = True
-                                    scheduler = core.Scheduler(st.session_state['members'], active_days=st.session_state['active_days'], pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                                    scheduler = core.Scheduler(st.session_state['members'], active_days=st.session_state['active_days'], pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
-                                    st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
+                                    st.session_state['top_schedules'] = scheduler.top_schedules
                                     st.success("Locked and Rerolled!")
                                     st.rerun()
         else: st.info("Select a slot from the grid above to start editing.")
@@ -376,7 +382,7 @@ else:
     # --- TAB 3: PARTNER MATCHER ---
     with tab3:
         st.subheader("Partner Matcher & Re-roll")
-        all_names = sorted([m.name for m in st.session_state['members']])
+        all_names = sorted([m.name for m in st.session_state['members'] if m.name not in st.session_state['never_schedule']])
         col_a, col_b = st.columns(2)
         with col_a: name_a = st.selectbox("Person A", all_names, key="match_a")
         with col_b: name_b = st.selectbox("Person B", all_names, key="match_b")
@@ -401,24 +407,23 @@ else:
                                     perform_overwrite_assign(target, []) 
                                     target.assigned_members = [p1, p2]
                                     target.locked = True
-                                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
-                                    st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
+                                    st.session_state['top_schedules'] = scheduler.top_schedules 
                                     st.rerun()
 
-    # --- TAB 4: CONFLICT MANAGER (NEW) ---
+    # --- TAB 4: CONFLICT MANAGER ---
     with tab4:
         st.subheader("🚫 Conflict Manager")
         st.markdown("Ensure two specific members are **never assigned to the same slot**.")
         
-        # Input for New Conflict
-        all_names = sorted([m.name for m in st.session_state['members']])
+        all_names = sorted([m.name for m in st.session_state['members'] if m.name not in st.session_state['never_schedule']])
         c1, c2, c3 = st.columns([2, 2, 2])
         with c1: c_p1 = st.selectbox("Member 1", all_names, key="conf_1")
         with c2: c_p2 = st.selectbox("Member 2", all_names, key="conf_2")
         with c3: 
-            st.write("") # Spacer
+            st.write("") 
             if st.button("🚫 Lock Conflict & Reroll", type="primary", use_container_width=True):
                 if c_p1 == c_p2:
                     st.error("Select two different people.")
@@ -429,10 +434,10 @@ else:
                     else:
                         st.session_state['forbidden_pairs'].append(pair)
                         with st.spinner(f"Separating {c_p1} & {c_p2} and re-optimizing..."):
-                            scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'])
+                            scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
                             scheduler.solve()
                             st.session_state['schedule_grid'] = scheduler.schedule_grid
-                            st.session_state['top_schedules'] = scheduler.top_schedules # UPDATE GENERATED OPTIONS
+                            st.session_state['top_schedules'] = scheduler.top_schedules 
                             st.success("Schedule Updated! Conflict rule applied.")
                             st.rerun()
 
@@ -450,3 +455,77 @@ else:
                     if st.button("🗑️ Remove", key=f"del_conf_{i}"):
                         st.session_state['forbidden_pairs'].pop(i)
                         st.rerun()
+
+    # --- TAB 5: PARTICIPATION MANAGER (NEW) ---
+    with tab5:
+        st.subheader("🛑 Participation Manager")
+        st.markdown("Manage who **MUST** work and who should **NEVER** work.")
+        
+        all_names_full = sorted([m.name for m in st.session_state['members']])
+        
+        col_must, col_never = st.columns(2)
+        
+        with col_must:
+            st.markdown("### 🔥 Force Schedule (Must Work)")
+            st.caption("These members MUST be assigned at least 1 slot. Solutions without them will be rejected.")
+            
+            # Use callback or simple session state update
+            # We filter out 'never' people from 'must' to prevent logic errors
+            valid_for_must = [n for n in all_names_full if n not in st.session_state['never_schedule']]
+            
+            new_must = st.multiselect(
+                "Select Members to Force:", 
+                valid_for_must, 
+                default=[n for n in st.session_state['must_schedule'] if n in valid_for_must],
+                key="widget_must_schedule"
+            )
+            
+            # Apply Changes Button
+            if st.button("💾 Apply 'Force' & Reroll", type="primary"):
+                st.session_state['must_schedule'] = new_must
+                with st.spinner("Re-optimizing with forced members..."):
+                    scheduler = core.Scheduler(
+                        st.session_state['members'], 
+                        active_days=selected_days, 
+                        pre_filled_grid=grid, 
+                        forbidden_pairs=st.session_state['forbidden_pairs'],
+                        must_schedule=st.session_state['must_schedule'],
+                        never_schedule=st.session_state['never_schedule']
+                    )
+                    success = scheduler.solve()
+                    st.session_state['schedule_grid'] = scheduler.schedule_grid
+                    st.session_state['top_schedules'] = scheduler.top_schedules
+                    if success: st.success("Updated! Forced members included.")
+                    else: st.error("Could not find a schedule that includes everyone forced!")
+                    st.rerun()
+
+        with col_never:
+            st.markdown("### ⛔ Exclude (Never Work)")
+            st.caption("These members will be treated as unavailable for ALL slots.")
+            
+            # Filter out 'must' people from 'never'
+            valid_for_never = [n for n in all_names_full if n not in st.session_state['must_schedule']]
+            
+            new_never = st.multiselect(
+                "Select Members to Exclude:", 
+                valid_for_never, 
+                default=[n for n in st.session_state['never_schedule'] if n in valid_for_never],
+                key="widget_never_schedule"
+            )
+            
+            if st.button("💾 Apply 'Exclude' & Reroll"):
+                st.session_state['never_schedule'] = new_never
+                with st.spinner("Re-optimizing without excluded members..."):
+                    scheduler = core.Scheduler(
+                        st.session_state['members'], 
+                        active_days=selected_days, 
+                        pre_filled_grid=grid, 
+                        forbidden_pairs=st.session_state['forbidden_pairs'],
+                        must_schedule=st.session_state['must_schedule'],
+                        never_schedule=st.session_state['never_schedule']
+                    )
+                    scheduler.solve()
+                    st.session_state['schedule_grid'] = scheduler.schedule_grid
+                    st.session_state['top_schedules'] = scheduler.top_schedules
+                    st.success("Updated! Members excluded.")
+                    st.rerun()
