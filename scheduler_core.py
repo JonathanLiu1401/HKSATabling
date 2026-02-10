@@ -23,8 +23,16 @@ class Member:
     avoid_closing: bool
     preferred_days: List[str] = field(default_factory=list)
     assigned_shifts: List[Tuple[str, int]] = field(default_factory=list)
+    # NEW: Store temporary overrides. Structure: { "Monday": {0: False, 1: True} }
+    # True = Force Available, False = Force Unavailable
+    time_overrides: Dict[str, Dict[int, bool]] = field(default_factory=dict)
 
     def is_available(self, day: str, time_idx: int) -> bool:
+        # 1. Check Overrides First
+        if day in self.time_overrides and time_idx in self.time_overrides[day]:
+            return self.time_overrides[day][time_idx]
+
+        # 2. Standard Checks
         if time_idx not in self.availability.get(day, []): return False
         if self.avoid_opening and time_idx == 0: return False
         if self.avoid_closing and time_idx == 3: return False
@@ -48,8 +56,6 @@ class Scheduler:
         self.members = members
         self.active_days = active_days if active_days else ALL_DAYS
         self.forbidden_pairs = forbidden_pairs if forbidden_pairs else []
-        
-        # --- NEW CONSTRAINTS ---
         self.must_schedule = must_schedule if must_schedule else []
         self.never_schedule = never_schedule if never_schedule else []
         
@@ -63,7 +69,6 @@ class Scheduler:
         self.max_filled_count = -1
         self.top_schedules = []
         
-        # Filter active members for solving
         self.working_members = [m for m in self.members if m.name not in self.never_schedule]
 
     def _initialize_grid(self) -> List[Shift]:
@@ -88,7 +93,6 @@ class Scheduler:
             if shift.locked:
                 restored_members = []
                 for m in shift.assigned_members:
-                    # Find member in the full list
                     real_m = next((x for x in self.members if x.name == m.name), None)
                     if real_m:
                         real_m.assigned_shifts.append((shift.day, shift.time_idx))
@@ -128,7 +132,6 @@ class Scheduler:
             pass 
 
         if self.top_schedules:
-            # Sort by score descending (Best first)
             self.top_schedules.sort(key=lambda x: x['score'], reverse=True)
             self.restore_state(self.top_schedules[0]['state'])
             return len(self.top_schedules)
@@ -147,20 +150,16 @@ class Scheduler:
             self.max_filled_count = current_filled_count
             self.best_grid_state = self._capture_state()
 
-        # SUCCESS: Found a full schedule
         if current_filled_count == len(self.schedule_grid):
-            # --- NEW VALIDATION: Check Must Schedule ---
             assigned_names = set()
             for s in self.schedule_grid:
                 for m in s.assigned_members:
                     assigned_names.add(m.name)
             
-            # If any "must schedule" person is missing, REJECT this solution
             for must_name in self.must_schedule:
                 if must_name not in assigned_names:
-                    return False # Force backtrack to find a solution that includes them
+                    return False 
             
-            # Calculate Score
             score = 0
             for s in self.schedule_grid:
                 for m in s.assigned_members:
@@ -184,7 +183,6 @@ class Scheduler:
         if current_shift.locked and len(current_shift.assigned_members) >= 2:
             return self._backtrack(shift_index + 1)
 
-        # CASE 1: 1 Person Assigned (Partial Lock)
         if len(current_shift.assigned_members) == 1:
             existing_member = current_shift.assigned_members[0]
             partners = self._get_valid_partners(current_shift, existing_member)
@@ -199,18 +197,13 @@ class Scheduler:
                 p.assigned_shifts.pop()
             return False
 
-        # CASE 2: Empty Slot
         potential_pairs = self._get_valid_pairs(current_shift)
         
-        # --- UPDATED SORTING LOGIC ---
         def pair_score(pair):
             p1, p2 = pair
             score = 0
-            # Huge bonus for scheduling "Must Schedule" people
             if p1.name in self.must_schedule: score += 1000
             if p2.name in self.must_schedule: score += 1000
-            
-            # Normal preference points
             if current_shift.day in p1.preferred_days: score += 5
             if current_shift.day in p2.preferred_days: score += 5
             return score
@@ -256,7 +249,6 @@ class Scheduler:
         return False
 
     def _get_valid_pairs(self, shift: Shift):
-        # Only use self.working_members (which excludes the "Never Schedule" people)
         available_people = [
             m for m in self.working_members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0
@@ -271,7 +263,6 @@ class Scheduler:
         return valid_pairs
 
     def _get_valid_partners(self, shift: Shift, current_member: Member):
-        # Only use self.working_members
         available_people = [
             m for m in self.working_members 
             if m.is_available(shift.day, shift.time_idx) and len(m.assigned_shifts) == 0 and m.name != current_member.name
@@ -285,7 +276,7 @@ class Scheduler:
         valid_partners.sort(key=lambda m: 1 if shift.day in m.preferred_days else 0, reverse=True)
         return valid_partners
 
-# --- EXISTING UTILS (Unchanged) ---
+# --- UTILS ---
 def find_best_slots_for_pair(p1: Member, p2: Member, active_days: List[str]) -> List[Dict]:
     ranked_slots = []
     for day in active_days:
@@ -418,7 +409,7 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
         
     return output.getvalue()
 
-def export_configuration(schedule_grid, forbidden_pairs, active_days, must_schedule=None, never_schedule=None):
+def export_configuration(schedule_grid, forbidden_pairs, active_days, must_schedule, never_schedule, members):
     """Serializes the current schedule state to a JSON string."""
     grid_data = []
     for shift in schedule_grid:
@@ -429,11 +420,23 @@ def export_configuration(schedule_grid, forbidden_pairs, active_days, must_sched
             "assigned": [m.name for m in shift.assigned_members]
         })
     
+    # NEW: Extract overrides from members
+    overrides_data = {}
+    for m in members:
+        if m.time_overrides:
+            # We need to serialize Dict[int, bool] keys to strings for JSON
+            # { "Monday": { "0": true } }
+            overrides_data[m.name] = {
+                day: {str(t): val for t, val in times.items()} 
+                for day, times in m.time_overrides.items()
+            }
+
     return json.dumps({
         "active_days": active_days,
         "forbidden_pairs": forbidden_pairs,
-        "must_schedule": must_schedule if must_schedule else [],
-        "never_schedule": never_schedule if never_schedule else [],
+        "must_schedule": must_schedule,
+        "never_schedule": never_schedule,
+        "overrides": overrides_data, # NEW
         "grid": grid_data
     }, indent=2)
 
@@ -452,6 +455,17 @@ def load_configuration(json_content, all_members):
     # 2. Map existing member objects by name for quick lookup
     member_map = {m.name: m for m in all_members}
     
+    # NEW: Restore Overrides
+    overrides_data = data.get("overrides", {})
+    for name, day_map in overrides_data.items():
+        if name in member_map:
+            # Convert keys back to int
+            # { "Monday": {0: True} }
+            restored_overrides = {}
+            for day, t_map in day_map.items():
+                restored_overrides[day] = {int(t): val for t, val in t_map.items()}
+            member_map[name].time_overrides = restored_overrides
+
     # 3. Reconstruct Grid
     new_grid = []
     grid_data = data.get("grid", [])
@@ -459,19 +473,16 @@ def load_configuration(json_content, all_members):
     for slot_data in grid_data:
         day = slot_data["day"]
         time_idx = slot_data["time_idx"]
-        # Retrieve label from constants
         time_label = next((k for k, v in TIME_SLOTS.items() if v == time_idx), "Unknown")
         
         new_shift = Shift(day, time_idx, time_label)
         new_shift.locked = slot_data["locked"]
         
-        # Restore assignments using actual Member objects
         restored_members = []
         for name in slot_data["assigned"]:
             if name in member_map:
                 member = member_map[name]
                 restored_members.append(member)
-                # Update member's internal state to reflect they are working this slot
                 if (day, time_idx) not in member.assigned_shifts:
                     member.assigned_shifts.append((day, time_idx))
         
