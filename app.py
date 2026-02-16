@@ -2,6 +2,7 @@ import streamlit as st
 import scheduler_core as core
 import pandas as pd
 import copy
+from streamlit_local_storage import LocalStorage 
 
 st.set_page_config(page_title="HKSA Scheduler", page_icon="📅", layout="wide")
 
@@ -14,43 +15,54 @@ def apply_config_callback():
     
     if uploaded_file and st.session_state.get('members'):
         try:
-            # 1. Clear current assignments
-            for m in st.session_state['members']:
-                m.assigned_shifts = []
-
-            # 2. Load and Parse
-            a_days, f_pairs, must_s, never_s, new_grid = core.load_configuration(
-                uploaded_file.getvalue(), 
-                st.session_state['members']
-            )
-            
-            # 3. Update Session State
-            st.session_state['active_days_selection'] = a_days  
-            st.session_state['active_days'] = a_days
-            st.session_state['forbidden_pairs'] = f_pairs
-            st.session_state['must_schedule'] = must_s
-            st.session_state['never_schedule'] = never_s
-            st.session_state['schedule_grid'] = new_grid
-            st.session_state['top_schedules'] = [] # Reset tops on manual load
-            st.session_state['last_stable_state'] = {} # Reset diff history
-            
+            restore_state_from_json(uploaded_file.getvalue())
         except Exception as e:
             st.error(f"Error applying config: {e}")
 
+def restore_state_from_json(json_str):
+    """Helper to parse JSON and update session state."""
+    # 1. Clear current assignments
+    for m in st.session_state['members']:
+        m.assigned_shifts = []
+
+    # 2. Load and Parse
+    a_days, f_pairs, must_s, never_s, new_grid = core.load_configuration(
+        json_str, 
+        st.session_state['members']
+    )
+    
+    # 3. Update Session State (Data)
+    st.session_state['active_days_selection'] = a_days  
+    st.session_state['active_days'] = a_days
+    st.session_state['forbidden_pairs'] = f_pairs
+    st.session_state['must_schedule'] = must_s
+    st.session_state['never_schedule'] = never_s
+    st.session_state['schedule_grid'] = new_grid
+    st.session_state['top_schedules'] = [] 
+    st.session_state['last_stable_state'] = {} 
+
+    # 4. Update Session State (UI Widgets)
+    st.session_state['widget_must'] = must_s
+    st.session_state['widget_never'] = never_s
+
 if 'members' not in st.session_state: st.session_state['members'] = []
 if 'schedule_grid' not in st.session_state: st.session_state['schedule_grid'] = []
-if 'active_days_selection' not in st.session_state: st.session_state['active_days_selection'] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-if 'active_days' not in st.session_state: st.session_state['active_days'] = []
+
+# (Defaults removed here; handled in widget)
+
 if 'editor_selected_slot' not in st.session_state: st.session_state['editor_selected_slot'] = None
 if 'forbidden_pairs' not in st.session_state: st.session_state['forbidden_pairs'] = []
 if 'top_schedules' not in st.session_state: st.session_state['top_schedules'] = []
 if 'file_hash' not in st.session_state: st.session_state['file_hash'] = 0
 if 'must_schedule' not in st.session_state: st.session_state['must_schedule'] = []
 if 'never_schedule' not in st.session_state: st.session_state['never_schedule'] = []
-# NEW: Store the last "good" state to calculate diffs against
 if 'last_stable_state' not in st.session_state: st.session_state['last_stable_state'] = {}
+if 'autosave_restored' not in st.session_state: st.session_state['autosave_restored'] = False
 
 st.title("📅 HKSA Tabling Scheduler Pro")
+
+# Initialize LocalStorage
+ls = LocalStorage()
 
 # --- HELPER: Capture State Wrapper ---
 def capture_current_state():
@@ -64,7 +76,14 @@ def capture_current_state():
 with st.sidebar:
     st.header("1. Configuration")
     all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    selected_days = st.multiselect("Active Days:", all_days, key="active_days_selection")
+    
+    # UPDATED: Use 'default' parameter to ensure days are selected on first load
+    selected_days = st.multiselect(
+        "Active Days:", 
+        all_days, 
+        default=all_days, 
+        key="active_days_selection"
+    )
     st.session_state['active_days'] = selected_days
     
     st.header("2. Upload Data")
@@ -73,7 +92,9 @@ with st.sidebar:
     if uploaded_file:
         current_hash = hash(uploaded_file.getvalue())
         if current_hash != st.session_state['file_hash']:
+            # New File Uploaded
             st.session_state['file_hash'] = current_hash
+            st.session_state['autosave_restored'] = False # Reset restore flag
             try:
                 members = core.parse_file(uploaded_file)
                 st.session_state['members'] = members
@@ -85,6 +106,19 @@ with st.sidebar:
                 st.error(f"Error parsing: {e}")
         elif st.session_state['members']:
             st.info(f"Loaded {len(st.session_state['members'])} members")
+            
+            # --- AUTOSAVE RESTORE LOGIC ---
+            if not st.session_state['autosave_restored']:
+                autosave_data = ls.getItem("hksa_autosave_v1")
+                if autosave_data:
+                    try:
+                        restore_state_from_json(autosave_data)
+                        st.toast("🔄 Restored session from browser storage!", icon="💾")
+                        st.session_state['autosave_restored'] = True
+                        st.rerun()
+                    except Exception as e:
+                        print(f"Autosave restore failed: {e}")
+                        st.session_state['autosave_restored'] = True
 
     st.header("3. Actions")
     if st.button("🚀 Auto-Generate Schedule", type="primary"):
@@ -92,7 +126,6 @@ with st.sidebar:
             st.error("Upload data first!")
         else:
             with st.spinner("Solving..."):
-                # Initial solve, no previous state to compare to
                 st.session_state['last_stable_state'] = {}
                 scheduler = core.Scheduler(
                     st.session_state['members'], 
@@ -105,7 +138,6 @@ with st.sidebar:
                 st.session_state['schedule_grid'] = scheduler.schedule_grid
                 st.session_state['top_schedules'] = scheduler.top_schedules 
                 st.session_state['editor_selected_slot'] = None 
-                # After generate, save as stable state
                 st.session_state['last_stable_state'] = capture_current_state()
                 
                 if success_count > 0: 
@@ -272,7 +304,6 @@ else:
             count = len(st.session_state['top_schedules'])
             count_label = ">50" if count > 50 else str(count)
             with st.expander(f"💎 Generated Options ({count_label} found)", expanded=True):
-                # NEW: Show Changes
                 st.caption("ℹ️ **Least Changes Mode:** Options with fewest changes from previous schedule are prioritized.")
                 
                 opts = range(min(count, 50))
@@ -312,7 +343,6 @@ else:
                     btn_label = "\n".join(names) if names else "➕ Empty"
                     if shift.locked: btn_label = "🔒 " + btn_label.replace("\n", ", ")
                     
-                    # NEW: Diff View Logic
                     is_changed = False
                     tooltip = ""
                     if st.session_state.get('last_stable_state'):
@@ -321,11 +351,9 @@ else:
                             is_changed = True
                             prev_str = ", ".join(prev_names) if prev_names else "(Empty)"
                             tooltip = f"Changed! WAS: {prev_str}"
-                            btn_label += " 📝" # Add icon to show change
+                            btn_label += " 📝" 
                     
                     is_selected = (st.session_state['editor_selected_slot'] == (day, time_idx))
-                    # If selected: primary. If not selected but changed: secondary (Streamlit doesn't support 'warning' button type)
-                    # We rely on the icon and tooltip for diff.
                     btn_type = "primary" if is_selected else "secondary"
                     
                     if row_cols[i+1].button(btn_label, key=f"btn_{day}_{time_idx}", use_container_width=True, type=btn_type, help=tooltip):
@@ -378,7 +406,6 @@ else:
                             st.success("Updated!")
                             st.rerun()
                     with b_col2:
-                         # NEW: Lock without Reroll
                         if st.button("🔒 Lock (No Reroll)", use_container_width=True):
                             new_members = []
                             if sel1 != "(Unfilled)":
@@ -403,7 +430,6 @@ else:
                                 m2 = find_member_by_str(sel2)
                                 if m2 and m2 not in new_members: new_members.append(m2)
                             
-                            # Capture state BEFORE applying new lock/reroll for diff comparison
                             st.session_state['last_stable_state'] = capture_current_state()
 
                             with st.spinner("Locking and re-optimizing (Least Changes)..."):
@@ -417,7 +443,7 @@ else:
                                     forbidden_pairs=st.session_state['forbidden_pairs'], 
                                     must_schedule=st.session_state['must_schedule'], 
                                     never_schedule=st.session_state['never_schedule'],
-                                    previous_state=st.session_state['last_stable_state'] # Pass previous state
+                                    previous_state=st.session_state['last_stable_state'] 
                                 )
                                 scheduler.solve()
                                 st.session_state['schedule_grid'] = scheduler.schedule_grid
@@ -449,23 +475,13 @@ else:
                         with c2: st.info(f"Score: {slot['score']} ({slot['reason']})")
                         with c3:
                             if st.button("Lock & Reroll", key=f"btn_{i}"):
-                                # Capture state for diff
                                 st.session_state['last_stable_state'] = capture_current_state()
-                                
                                 with st.spinner("Re-optimizing (Least Changes)..."):
                                     target = next((s for s in grid if s.day == slot['day'] and s.time_idx == slot['time_idx']), None)
                                     perform_overwrite_assign(target, []) 
                                     target.assigned_members = [p1, p2]
                                     target.locked = True
-                                    scheduler = core.Scheduler(
-                                        st.session_state['members'], 
-                                        active_days=selected_days, 
-                                        pre_filled_grid=grid, 
-                                        forbidden_pairs=st.session_state['forbidden_pairs'], 
-                                        must_schedule=st.session_state['must_schedule'], 
-                                        never_schedule=st.session_state['never_schedule'],
-                                        previous_state=st.session_state['last_stable_state']
-                                    )
+                                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'], previous_state=st.session_state['last_stable_state'])
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
                                     st.session_state['top_schedules'] = scheduler.top_schedules 
@@ -487,19 +503,9 @@ else:
                     if pair in st.session_state['forbidden_pairs']: st.warning("Exists.")
                     else:
                         st.session_state['forbidden_pairs'].append(pair)
-                        # Capture state
                         st.session_state['last_stable_state'] = capture_current_state()
-                        
                         with st.spinner(f"Re-optimizing (Least Changes)..."):
-                            scheduler = core.Scheduler(
-                                st.session_state['members'], 
-                                active_days=selected_days, 
-                                pre_filled_grid=grid, 
-                                forbidden_pairs=st.session_state['forbidden_pairs'], 
-                                must_schedule=st.session_state['must_schedule'], 
-                                never_schedule=st.session_state['never_schedule'],
-                                previous_state=st.session_state['last_stable_state']
-                            )
+                            scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'], previous_state=st.session_state['last_stable_state'])
                             scheduler.solve()
                             st.session_state['schedule_grid'] = scheduler.schedule_grid
                             st.session_state['top_schedules'] = scheduler.top_schedules 
@@ -523,7 +529,7 @@ else:
             st.markdown("### 🔥 Force Schedule")
             valid_for_must = [n for n in all_names_full if n not in st.session_state['never_schedule']]
             new_must = st.multiselect("Select Members:", valid_for_must, default=[n for n in st.session_state['must_schedule'] if n in valid_for_must], key="widget_must")
-            if st.button("💾 Apply 'Force' & Reroll"):
+            if st.button("💾 Apply 'Force' & Reroll", type="primary"):
                 st.session_state['must_schedule'] = new_must
                 st.session_state['last_stable_state'] = capture_current_state()
                 with st.spinner("Re-optimizing..."):
@@ -546,86 +552,69 @@ else:
                     st.session_state['top_schedules'] = scheduler.top_schedules
                     st.rerun()
 
-# --- TAB 6: TIME MANAGER (SMART TOGGLES) ---
+    # --- TAB 6: TIME MANAGER ---
     with tab6:
         st.subheader("⏳ Time Slot Manager")
         st.markdown("Temporarily override availability for a specific member.")
         
-        # 1. Select Member
         all_names = sorted([m.name for m in st.session_state['members']])
         target_name = st.selectbox("Select Member:", all_names, key="tm_member")
-        
         target_member = find_member_exact(target_name)
         
         if target_member:
             st.divider()
-            
-            # Define days for both buttons and grid
             display_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
-            # --- QUICK ACTIONS (TOGGLE LOGIC) ---
+            # --- QUICK ACTIONS ---
             st.markdown("### ⚡ Quick Actions")
             c_q1, c_q2, c_q3 = st.columns(3)
-            
             with c_q1:
                 if st.button("🛡️ Force Opening/Closing Only", help="Toggle: Forces 11:30 & 12:30 slots UNAVAILABLE. Click again to Revert."):
-                    # 1. Check if already applied (Are middle slots forced OFF for all days?)
                     is_applied = True
                     for day in display_days:
                         ov = target_member.time_overrides.get(day, {})
-                        if ov.get(1) is not False or ov.get(2) is not False:
-                            is_applied = False; break
-                    
-                    # 2. Toggle
-                    if is_applied: # REVERT
+                        if ov.get(1) is not False or ov.get(2) is not False: is_applied = False; break
+                    if is_applied: 
                         for day in display_days:
                             if day in target_member.time_overrides:
                                 target_member.time_overrides[day].pop(1, None)
                                 target_member.time_overrides[day].pop(2, None)
                                 if not target_member.time_overrides[day]: del target_member.time_overrides[day]
                         st.success("Reverted: Middle slots restored to default.")
-                    else: # APPLY
+                    else: 
                         for day in display_days:
                             if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
                             target_member.time_overrides[day][1] = False
                             target_member.time_overrides[day][2] = False
                         st.success("Restricted to Opening/Closing slots!")
                     st.rerun()
-
             with c_q2:
                 if st.button("🚫 Force NO Opening/Closing", help="Toggle: Forces 10:30 & 1:30 slots UNAVAILABLE. Click again to Revert."):
-                    # 1. Check if already applied (Are edge slots forced OFF for all days?)
                     is_applied = True
                     for day in display_days:
                         ov = target_member.time_overrides.get(day, {})
-                        if ov.get(0) is not False or ov.get(3) is not False:
-                            is_applied = False; break
-                    
-                    # 2. Toggle
-                    if is_applied: # REVERT
+                        if ov.get(0) is not False or ov.get(3) is not False: is_applied = False; break
+                    if is_applied: 
                         for day in display_days:
                             if day in target_member.time_overrides:
                                 target_member.time_overrides[day].pop(0, None)
                                 target_member.time_overrides[day].pop(3, None)
                                 if not target_member.time_overrides[day]: del target_member.time_overrides[day]
                         st.success("Reverted: Opening/Closing slots restored to default.")
-                    else: # APPLY
+                    else: 
                         for day in display_days:
                             if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
                             target_member.time_overrides[day][0] = False
                             target_member.time_overrides[day][3] = False
                         st.success("Removed Opening/Closing availability!")
                     st.rerun()
-            
             with c_q3:
                 if st.button("🔄 Reset All Overrides", help="Clear all manual changes for this member."):
                     target_member.time_overrides = {}
                     st.success("All overrides cleared for this member.")
                     st.rerun()
-            
             st.divider()
 
-            # --- GRID VIEW (UNCHANGED) ---
             cols_config = [1.2] + [1 for _ in display_days]
             header_cols = st.columns(cols_config)
             header_cols[0].write("**Time**")
@@ -663,17 +652,25 @@ else:
                     b_key = f"tm_{target_name}_{day}_{time_idx}"
                     if row_cols[i+1].button(btn_label, key=b_key, use_container_width=True, type=btn_type, help=help_txt):
                         if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
-                        
-                        if override_status is None:
-                            target_member.time_overrides[day][time_idx] = True 
-                        elif override_status is True:
-                            target_member.time_overrides[day][time_idx] = False 
+                        if override_status is None: target_member.time_overrides[day][time_idx] = True 
+                        elif override_status is True: target_member.time_overrides[day][time_idx] = False 
                         elif override_status is False:
                             del target_member.time_overrides[day][time_idx]
-                            if not target_member.time_overrides[day]:
-                                del target_member.time_overrides[day]
-                        
+                            if not target_member.time_overrides[day]: del target_member.time_overrides[day]
                         st.rerun()
 
             st.divider()
             st.caption("📝 **Legend:** 🟢/⚪ = Default from CSV (Click to override) | ✅ = Forced Available | ⛔ = Forced Unavailable")
+
+# --- AUTOSAVE (END OF SCRIPT) ---
+if st.session_state.get('members') and st.session_state.get('schedule_grid'):
+    current_config = core.export_configuration(
+        st.session_state['schedule_grid'],
+        st.session_state['forbidden_pairs'],
+        st.session_state['active_days'],
+        st.session_state['must_schedule'],
+        st.session_state['never_schedule'],
+        st.session_state['members']
+    )
+    # This runs on every render where we have data, keeping browser storage in sync
+    ls.setItem("hksa_autosave_v1", current_config)
