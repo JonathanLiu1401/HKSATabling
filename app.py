@@ -19,7 +19,6 @@ def apply_config_callback():
                 m.assigned_shifts = []
 
             # 2. Load and Parse
-            # Note: load_configuration now modifies members in-place to add overrides
             a_days, f_pairs, must_s, never_s, new_grid = core.load_configuration(
                 uploaded_file.getvalue(), 
                 st.session_state['members']
@@ -33,6 +32,7 @@ def apply_config_callback():
             st.session_state['never_schedule'] = never_s
             st.session_state['schedule_grid'] = new_grid
             st.session_state['top_schedules'] = [] # Reset tops on manual load
+            st.session_state['last_stable_state'] = {} # Reset diff history
             
         except Exception as e:
             st.error(f"Error applying config: {e}")
@@ -47,8 +47,18 @@ if 'top_schedules' not in st.session_state: st.session_state['top_schedules'] = 
 if 'file_hash' not in st.session_state: st.session_state['file_hash'] = 0
 if 'must_schedule' not in st.session_state: st.session_state['must_schedule'] = []
 if 'never_schedule' not in st.session_state: st.session_state['never_schedule'] = []
+# NEW: Store the last "good" state to calculate diffs against
+if 'last_stable_state' not in st.session_state: st.session_state['last_stable_state'] = {}
 
 st.title("📅 HKSA Tabling Scheduler Pro")
+
+# --- HELPER: Capture State Wrapper ---
+def capture_current_state():
+    state = {}
+    for shift in st.session_state['schedule_grid']:
+        names = [m.name for m in shift.assigned_members]
+        state[(shift.day, shift.time_idx)] = names
+    return state
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -69,6 +79,7 @@ with st.sidebar:
                 st.session_state['members'] = members
                 st.session_state['top_schedules'] = [] 
                 st.session_state['schedule_grid'] = []
+                st.session_state['last_stable_state'] = {}
                 st.success(f"Loaded {len(members)} members")
             except Exception as e:
                 st.error(f"Error parsing: {e}")
@@ -81,6 +92,8 @@ with st.sidebar:
             st.error("Upload data first!")
         else:
             with st.spinner("Solving..."):
+                # Initial solve, no previous state to compare to
+                st.session_state['last_stable_state'] = {}
                 scheduler = core.Scheduler(
                     st.session_state['members'], 
                     active_days=selected_days, 
@@ -92,6 +105,8 @@ with st.sidebar:
                 st.session_state['schedule_grid'] = scheduler.schedule_grid
                 st.session_state['top_schedules'] = scheduler.top_schedules 
                 st.session_state['editor_selected_slot'] = None 
+                # After generate, save as stable state
+                st.session_state['last_stable_state'] = capture_current_state()
                 
                 if success_count > 0: 
                     st.success(f"Found {success_count} valid schedules!")
@@ -109,7 +124,7 @@ with st.sidebar:
             st.session_state['active_days'],
             st.session_state['must_schedule'],
             st.session_state['never_schedule'],
-            st.session_state['members'] # Pass members to save overrides
+            st.session_state['members'] 
         )
         st.download_button(
             label="💾 Save Configuration",
@@ -255,20 +270,20 @@ else:
     with tab2:
         if st.session_state.get('top_schedules'):
             count = len(st.session_state['top_schedules'])
-            display_count = "50" if count > 50 else str(count)
             count_label = ">50" if count > 50 else str(count)
-            
             with st.expander(f"💎 Generated Options ({count_label} found)", expanded=True):
-                st.caption("ℹ️ **Scoring:** +1000 for 'Must Schedule' met, +5 for Preferred Day.")
+                # NEW: Show Changes
+                st.caption("ℹ️ **Least Changes Mode:** Options with fewest changes from previous schedule are prioritized.")
                 
                 opts = range(min(count, 50))
                 def fmt_func(idx):
                     s = st.session_state['top_schedules'][idx]
-                    return f"Option {idx+1} (Score: {s['score']})"
+                    changes = s.get('changes', 0)
+                    score = s['score']
+                    return f"Option {idx+1} (Changes: {changes} | Score: {score})"
                 
                 c_sel, c_btn = st.columns([3, 1])
-                with c_sel:
-                    selected_opt_idx = st.selectbox("Select Version to Load:", opts, format_func=fmt_func)
+                with c_sel: selected_opt_idx = st.selectbox("Select Version to Load:", opts, format_func=fmt_func)
                 with c_btn:
                     st.write("") 
                     if st.button("🔄 Apply Option"):
@@ -296,9 +311,24 @@ else:
                     names = [m.name for m in shift.assigned_members]
                     btn_label = "\n".join(names) if names else "➕ Empty"
                     if shift.locked: btn_label = "🔒 " + btn_label.replace("\n", ", ")
+                    
+                    # NEW: Diff View Logic
+                    is_changed = False
+                    tooltip = ""
+                    if st.session_state.get('last_stable_state'):
+                        prev_names = st.session_state['last_stable_state'].get((day, time_idx), [])
+                        if set(prev_names) != set(names):
+                            is_changed = True
+                            prev_str = ", ".join(prev_names) if prev_names else "(Empty)"
+                            tooltip = f"Changed! WAS: {prev_str}"
+                            btn_label += " 📝" # Add icon to show change
+                    
                     is_selected = (st.session_state['editor_selected_slot'] == (day, time_idx))
+                    # If selected: primary. If not selected but changed: secondary (Streamlit doesn't support 'warning' button type)
+                    # We rely on the icon and tooltip for diff.
                     btn_type = "primary" if is_selected else "secondary"
-                    if row_cols[i+1].button(btn_label, key=f"btn_{day}_{time_idx}", use_container_width=True, type=btn_type):
+                    
+                    if row_cols[i+1].button(btn_label, key=f"btn_{day}_{time_idx}", use_container_width=True, type=btn_type, help=tooltip):
                         select_slot(day, time_idx)
                         st.rerun()
 
@@ -310,12 +340,9 @@ else:
                 st.markdown(f"### ✏️ Editing: {sel_day} @ {target_shift.time_label}")
                 with st.container(border=True):
                     if target_shift.locked:
-                        c_lock, c_msg = st.columns([1, 4])
-                        with c_lock:
-                            if st.button("🔓 Unlock Slot", type="primary"):
-                                target_shift.locked = False
-                                st.rerun()
-                        with c_msg: st.warning("Locked.")
+                        if st.button("🔓 Unlock Slot", type="primary"):
+                            target_shift.locked = False
+                            st.rerun()
                     
                     current_p1 = target_shift.assigned_members[0] if len(target_shift.assigned_members) > 0 else None
                     current_p2 = target_shift.assigned_members[1] if len(target_shift.assigned_members) > 1 else None
@@ -324,7 +351,6 @@ else:
                     with c_sel1:
                         exclude_1 = [current_p1] if current_p1 else []
                         opts1 = get_member_options(sel_day, sel_time_idx, exclude_1)
-                        
                         opts1.insert(0, "(Unfilled)")
                         if current_p1: opts1.insert(0, f"👤 {current_p1.name}")
                         sel1 = st.selectbox("Slot 1 Member", opts1, key="p1_ed")
@@ -332,13 +358,12 @@ else:
                     with c_sel2:
                         exclude_2 = [current_p2] if current_p2 else []
                         opts2 = get_member_options(sel_day, sel_time_idx, exclude_2)
-                        
                         opts2.insert(0, "(Unfilled)")
                         if current_p2: opts2.insert(0, f"👤 {current_p2.name}")
                         sel2 = st.selectbox("Slot 2 Member", opts2, key="p2_ed")
                         
                     st.write("")
-                    b_col1, b_col2 = st.columns(2)
+                    b_col1, b_col2, b_col3 = st.columns([1, 1, 1])
                     with b_col1:
                         if st.button("Update Slot (No Reroll)", use_container_width=True):
                             new_members = []
@@ -353,6 +378,22 @@ else:
                             st.success("Updated!")
                             st.rerun()
                     with b_col2:
+                         # NEW: Lock without Reroll
+                        if st.button("🔒 Lock (No Reroll)", use_container_width=True):
+                            new_members = []
+                            if sel1 != "(Unfilled)":
+                                m1 = find_member_by_str(sel1)
+                                if m1: new_members.append(m1)
+                            if sel2 != "(Unfilled)":
+                                m2 = find_member_by_str(sel2)
+                                if m2 and m2 not in new_members: new_members.append(m2)
+                            
+                            perform_overwrite_assign(target_shift, new_members)
+                            target_shift.locked = True
+                            st.success("Locked!")
+                            st.rerun()
+
+                    with b_col3:
                         if st.button("🔒 Lock & Reroll", type="primary", use_container_width=True):
                             new_members = []
                             if sel1 != "(Unfilled)":
@@ -362,28 +403,30 @@ else:
                                 m2 = find_member_by_str(sel2)
                                 if m2 and m2 not in new_members: new_members.append(m2)
                             
-                            conflict = False
-                            for s in grid:
-                                if s.locked and s != target_shift:
-                                    s_names = [m.name for m in s.assigned_members]
-                                    for nm in new_members:
-                                        if nm.name in s_names:
-                                            st.error(f"❌ {nm.name} is locked elsewhere!"); conflict = True; break
-                                if conflict: break
-                            
-                            if not conflict:
-                                with st.spinner("Locking and re-optimizing..."):
-                                    perform_overwrite_assign(target_shift, new_members)
-                                    target_shift.locked = True
-                                    scheduler = core.Scheduler(st.session_state['members'], active_days=st.session_state['active_days'], pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
-                                    scheduler.solve()
-                                    st.session_state['schedule_grid'] = scheduler.schedule_grid
-                                    st.session_state['top_schedules'] = scheduler.top_schedules
-                                    st.success("Locked and Rerolled!")
-                                    st.rerun()
+                            # Capture state BEFORE applying new lock/reroll for diff comparison
+                            st.session_state['last_stable_state'] = capture_current_state()
+
+                            with st.spinner("Locking and re-optimizing (Least Changes)..."):
+                                perform_overwrite_assign(target_shift, new_members)
+                                target_shift.locked = True
+                                
+                                scheduler = core.Scheduler(
+                                    st.session_state['members'], 
+                                    active_days=st.session_state['active_days'], 
+                                    pre_filled_grid=grid, 
+                                    forbidden_pairs=st.session_state['forbidden_pairs'], 
+                                    must_schedule=st.session_state['must_schedule'], 
+                                    never_schedule=st.session_state['never_schedule'],
+                                    previous_state=st.session_state['last_stable_state'] # Pass previous state
+                                )
+                                scheduler.solve()
+                                st.session_state['schedule_grid'] = scheduler.schedule_grid
+                                st.session_state['top_schedules'] = scheduler.top_schedules
+                                st.success("Locked and Rerolled!")
+                                st.rerun()
         else: st.info("Select a slot from the grid above to start editing.")
 
-    # --- TAB 3: PARTNER MATCHER ---
+    # --- TAB 3: PARTNER MATCH ---
     with tab3:
         st.subheader("Partner Matcher & Re-roll")
         all_names = sorted([m.name for m in st.session_state['members'] if m.name not in st.session_state['never_schedule']])
@@ -406,18 +449,29 @@ else:
                         with c2: st.info(f"Score: {slot['score']} ({slot['reason']})")
                         with c3:
                             if st.button("Lock & Reroll", key=f"btn_{i}"):
-                                with st.spinner("Re-optimizing..."):
+                                # Capture state for diff
+                                st.session_state['last_stable_state'] = capture_current_state()
+                                
+                                with st.spinner("Re-optimizing (Least Changes)..."):
                                     target = next((s for s in grid if s.day == slot['day'] and s.time_idx == slot['time_idx']), None)
                                     perform_overwrite_assign(target, []) 
                                     target.assigned_members = [p1, p2]
                                     target.locked = True
-                                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
+                                    scheduler = core.Scheduler(
+                                        st.session_state['members'], 
+                                        active_days=selected_days, 
+                                        pre_filled_grid=grid, 
+                                        forbidden_pairs=st.session_state['forbidden_pairs'], 
+                                        must_schedule=st.session_state['must_schedule'], 
+                                        never_schedule=st.session_state['never_schedule'],
+                                        previous_state=st.session_state['last_stable_state']
+                                    )
                                     scheduler.solve()
                                     st.session_state['schedule_grid'] = scheduler.schedule_grid
                                     st.session_state['top_schedules'] = scheduler.top_schedules 
                                     st.rerun()
 
-    # --- TAB 4: CONFLICT MANAGER ---
+    # --- TAB 4: CONFLICT ---
     with tab4:
         st.subheader("🚫 Conflict Manager")
         all_names = sorted([m.name for m in st.session_state['members'] if m.name not in st.session_state['never_schedule']])
@@ -427,108 +481,72 @@ else:
         with c3: 
             st.write("") 
             if st.button("🚫 Lock Conflict & Reroll", type="primary", use_container_width=True):
-                if c_p1 == c_p2:
-                    st.error("Select two different people.")
+                if c_p1 == c_p2: st.error("Select two different people.")
                 else:
                     pair = tuple(sorted((c_p1, c_p2)))
-                    if pair in st.session_state['forbidden_pairs']:
-                        st.warning("This conflict rule already exists.")
+                    if pair in st.session_state['forbidden_pairs']: st.warning("Exists.")
                     else:
                         st.session_state['forbidden_pairs'].append(pair)
-                        with st.spinner(f"Separating {c_p1} & {c_p2} and re-optimizing..."):
-                            scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'])
+                        # Capture state
+                        st.session_state['last_stable_state'] = capture_current_state()
+                        
+                        with st.spinner(f"Re-optimizing (Least Changes)..."):
+                            scheduler = core.Scheduler(
+                                st.session_state['members'], 
+                                active_days=selected_days, 
+                                pre_filled_grid=grid, 
+                                forbidden_pairs=st.session_state['forbidden_pairs'], 
+                                must_schedule=st.session_state['must_schedule'], 
+                                never_schedule=st.session_state['never_schedule'],
+                                previous_state=st.session_state['last_stable_state']
+                            )
                             scheduler.solve()
                             st.session_state['schedule_grid'] = scheduler.schedule_grid
                             st.session_state['top_schedules'] = scheduler.top_schedules 
-                            st.success("Schedule Updated! Conflict rule applied.")
                             st.rerun()
-
         st.divider()
-        st.markdown("### Active Conflicts")
-        
-        if not st.session_state['forbidden_pairs']:
-            st.info("No conflict rules active.")
-        else:
+        if st.session_state['forbidden_pairs']:
             for i, pair in enumerate(st.session_state['forbidden_pairs']):
                 col_text, col_del = st.columns([5, 1])
-                with col_text:
-                    st.error(f"🚫 **{pair[0]}** cannot work with **{pair[1]}**")
+                with col_text: st.error(f"🚫 **{pair[0]}** cannot work with **{pair[1]}**")
                 with col_del:
                     if st.button("🗑️ Remove", key=f"del_conf_{i}"):
                         st.session_state['forbidden_pairs'].pop(i)
                         st.rerun()
 
-    # --- TAB 5: PARTICIPATION MANAGER ---
+    # --- TAB 5: PARTICIPATION ---
     with tab5:
         st.subheader("🛑 Participation Manager")
-        st.markdown("Manage who **MUST** work and who should **NEVER** work.")
-        
         all_names_full = sorted([m.name for m in st.session_state['members']])
-        
         col_must, col_never = st.columns(2)
-        
         with col_must:
-            st.markdown("### 🔥 Force Schedule (Must Work)")
-            st.caption("These members MUST be assigned at least 1 slot. Solutions without them will be rejected.")
-            
+            st.markdown("### 🔥 Force Schedule")
             valid_for_must = [n for n in all_names_full if n not in st.session_state['never_schedule']]
-            
-            new_must = st.multiselect(
-                "Select Members to Force:", 
-                valid_for_must, 
-                default=[n for n in st.session_state['must_schedule'] if n in valid_for_must],
-                key="widget_must_schedule"
-            )
-            
-            if st.button("💾 Apply 'Force' & Reroll", type="primary"):
+            new_must = st.multiselect("Select Members:", valid_for_must, default=[n for n in st.session_state['must_schedule'] if n in valid_for_must], key="widget_must")
+            if st.button("💾 Apply 'Force' & Reroll"):
                 st.session_state['must_schedule'] = new_must
-                with st.spinner("Re-optimizing with forced members..."):
-                    scheduler = core.Scheduler(
-                        st.session_state['members'], 
-                        active_days=selected_days, 
-                        pre_filled_grid=grid, 
-                        forbidden_pairs=st.session_state['forbidden_pairs'],
-                        must_schedule=st.session_state['must_schedule'],
-                        never_schedule=st.session_state['never_schedule']
-                    )
-                    success = scheduler.solve()
-                    st.session_state['schedule_grid'] = scheduler.schedule_grid
-                    st.session_state['top_schedules'] = scheduler.top_schedules
-                    if success: st.success("Updated! Forced members included.")
-                    else: st.error("Could not find a schedule that includes everyone forced!")
-                    st.rerun()
-
-        with col_never:
-            st.markdown("### ⛔ Exclude (Never Work)")
-            st.caption("These members will be treated as unavailable for ALL slots.")
-            
-            valid_for_never = [n for n in all_names_full if n not in st.session_state['must_schedule']]
-            
-            new_never = st.multiselect(
-                "Select Members to Exclude:", 
-                valid_for_never, 
-                default=[n for n in st.session_state['never_schedule'] if n in valid_for_never],
-                key="widget_never_schedule"
-            )
-            
-            if st.button("💾 Apply 'Exclude' & Reroll"):
-                st.session_state['never_schedule'] = new_never
-                with st.spinner("Re-optimizing without excluded members..."):
-                    scheduler = core.Scheduler(
-                        st.session_state['members'], 
-                        active_days=selected_days, 
-                        pre_filled_grid=grid, 
-                        forbidden_pairs=st.session_state['forbidden_pairs'],
-                        must_schedule=st.session_state['must_schedule'],
-                        never_schedule=st.session_state['never_schedule']
-                    )
+                st.session_state['last_stable_state'] = capture_current_state()
+                with st.spinner("Re-optimizing..."):
+                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'], previous_state=st.session_state['last_stable_state'])
                     scheduler.solve()
                     st.session_state['schedule_grid'] = scheduler.schedule_grid
                     st.session_state['top_schedules'] = scheduler.top_schedules
-                    st.success("Updated! Members excluded.")
+                    st.rerun()
+        with col_never:
+            st.markdown("### ⛔ Exclude")
+            valid_for_never = [n for n in all_names_full if n not in st.session_state['must_schedule']]
+            new_never = st.multiselect("Select Members:", valid_for_never, default=[n for n in st.session_state['never_schedule'] if n in valid_for_never], key="widget_never")
+            if st.button("💾 Apply 'Exclude' & Reroll"):
+                st.session_state['never_schedule'] = new_never
+                st.session_state['last_stable_state'] = capture_current_state()
+                with st.spinner("Re-optimizing..."):
+                    scheduler = core.Scheduler(st.session_state['members'], active_days=selected_days, pre_filled_grid=grid, forbidden_pairs=st.session_state['forbidden_pairs'], must_schedule=st.session_state['must_schedule'], never_schedule=st.session_state['never_schedule'], previous_state=st.session_state['last_stable_state'])
+                    scheduler.solve()
+                    st.session_state['schedule_grid'] = scheduler.schedule_grid
+                    st.session_state['top_schedules'] = scheduler.top_schedules
                     st.rerun()
 
-# --- TAB 6: TIME MANAGER (UPDATED UI) ---
+# --- TAB 6: TIME MANAGER (SMART TOGGLES) ---
     with tab6:
         st.subheader("⏳ Time Slot Manager")
         st.markdown("Temporarily override availability for a specific member.")
@@ -542,69 +560,116 @@ else:
         if target_member:
             st.divider()
             
-            # Define days to show (Always show Mon-Fri to give full picture)
+            # Define days for both buttons and grid
             display_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+            # --- QUICK ACTIONS (TOGGLE LOGIC) ---
+            st.markdown("### ⚡ Quick Actions")
+            c_q1, c_q2, c_q3 = st.columns(3)
             
-            # Grid Header
-            # Columns: Time Label (1.2) + 5 Days (1 each)
+            with c_q1:
+                if st.button("🛡️ Force Opening/Closing Only", help="Toggle: Forces 11:30 & 12:30 slots UNAVAILABLE. Click again to Revert."):
+                    # 1. Check if already applied (Are middle slots forced OFF for all days?)
+                    is_applied = True
+                    for day in display_days:
+                        ov = target_member.time_overrides.get(day, {})
+                        if ov.get(1) is not False or ov.get(2) is not False:
+                            is_applied = False; break
+                    
+                    # 2. Toggle
+                    if is_applied: # REVERT
+                        for day in display_days:
+                            if day in target_member.time_overrides:
+                                target_member.time_overrides[day].pop(1, None)
+                                target_member.time_overrides[day].pop(2, None)
+                                if not target_member.time_overrides[day]: del target_member.time_overrides[day]
+                        st.success("Reverted: Middle slots restored to default.")
+                    else: # APPLY
+                        for day in display_days:
+                            if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
+                            target_member.time_overrides[day][1] = False
+                            target_member.time_overrides[day][2] = False
+                        st.success("Restricted to Opening/Closing slots!")
+                    st.rerun()
+
+            with c_q2:
+                if st.button("🚫 Force NO Opening/Closing", help="Toggle: Forces 10:30 & 1:30 slots UNAVAILABLE. Click again to Revert."):
+                    # 1. Check if already applied (Are edge slots forced OFF for all days?)
+                    is_applied = True
+                    for day in display_days:
+                        ov = target_member.time_overrides.get(day, {})
+                        if ov.get(0) is not False or ov.get(3) is not False:
+                            is_applied = False; break
+                    
+                    # 2. Toggle
+                    if is_applied: # REVERT
+                        for day in display_days:
+                            if day in target_member.time_overrides:
+                                target_member.time_overrides[day].pop(0, None)
+                                target_member.time_overrides[day].pop(3, None)
+                                if not target_member.time_overrides[day]: del target_member.time_overrides[day]
+                        st.success("Reverted: Opening/Closing slots restored to default.")
+                    else: # APPLY
+                        for day in display_days:
+                            if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
+                            target_member.time_overrides[day][0] = False
+                            target_member.time_overrides[day][3] = False
+                        st.success("Removed Opening/Closing availability!")
+                    st.rerun()
+            
+            with c_q3:
+                if st.button("🔄 Reset All Overrides", help="Clear all manual changes for this member."):
+                    target_member.time_overrides = {}
+                    st.success("All overrides cleared for this member.")
+                    st.rerun()
+            
+            st.divider()
+
+            # --- GRID VIEW (UNCHANGED) ---
             cols_config = [1.2] + [1 for _ in display_days]
             header_cols = st.columns(cols_config)
             header_cols[0].write("**Time**")
             for i, day in enumerate(display_days): 
                 header_cols[i+1].write(f"**{day}**")
             
-            # Grid Rows
             for time_label, time_idx in core.TIME_SLOTS.items():
                 row_cols = st.columns(cols_config)
-                # Time Label Column
                 row_cols[0].markdown(f"**{time_label}**")
                 
                 for i, day in enumerate(display_days):
-                    # 1. Determine Base Status (from CSV)
                     is_avail_base = time_idx in target_member.availability.get(day, [])
-                    
-                    # 2. Check for Overrides
                     override_status = None
                     if day in target_member.time_overrides and time_idx in target_member.time_overrides[day]:
                         override_status = target_member.time_overrides[day][time_idx]
                     
-                    # 3. Determine Button Style & Logic
-                    # Cycle: Default -> Force ON -> Force OFF -> Default
-                    
                     if override_status is True:
                         btn_label = "✅ ON"
                         btn_type = "primary"
-                        help_txt = "Override: Forced AVAILABLE. Click to Force UNAVAILABLE."
+                        help_txt = "Override: Forced AVAILABLE."
                     elif override_status is False:
                         btn_label = "⛔ OFF"
                         btn_type = "primary"
-                        help_txt = "Override: Forced UNAVAILABLE. Click to Restore Default."
+                        help_txt = "Override: Forced UNAVAILABLE."
                     else:
-                        # Default CSV State
                         if is_avail_base:
                             btn_label = "🟢 Free"
                             btn_type = "secondary"
-                            help_txt = "CSV Default: Available. Click to Force AVAILABLE."
+                            help_txt = "CSV Default: Available."
                         else:
                             btn_label = "⚪ Busy"
                             btn_type = "secondary"
-                            help_txt = "CSV Default: Busy. Click to Force AVAILABLE."
+                            help_txt = "CSV Default: Busy."
                     
-                    # 4. Render Button
                     b_key = f"tm_{target_name}_{day}_{time_idx}"
                     if row_cols[i+1].button(btn_label, key=b_key, use_container_width=True, type=btn_type, help=help_txt):
+                        if day not in target_member.time_overrides: target_member.time_overrides[day] = {}
                         
-                        # Initialize override dict for day if missing
-                        if day not in target_member.time_overrides: 
-                            target_member.time_overrides[day] = {}
-                        
-                        # Cycle Logic
                         if override_status is None:
-                            target_member.time_overrides[day][time_idx] = True # Default -> True
+                            target_member.time_overrides[day][time_idx] = True 
                         elif override_status is True:
-                            target_member.time_overrides[day][time_idx] = False # True -> False
+                            target_member.time_overrides[day][time_idx] = False 
                         elif override_status is False:
-                            del target_member.time_overrides[day][time_idx] # False -> Delete (Default)
+                            del target_member.time_overrides[day][time_idx]
                             if not target_member.time_overrides[day]:
                                 del target_member.time_overrides[day]
                         
@@ -612,4 +677,3 @@ else:
 
             st.divider()
             st.caption("📝 **Legend:** 🟢/⚪ = Default from CSV (Click to override) | ✅ = Forced Available | ⛔ = Forced Unavailable")
-            st.info("ℹ️ **Tip:** Use 'Force OFF' (⛔) to mark someone as busy for a specific slot this week, or 'Force ON' (✅) to make them available even if the CSV says they are busy.")

@@ -23,8 +23,7 @@ class Member:
     avoid_closing: bool
     preferred_days: List[str] = field(default_factory=list)
     assigned_shifts: List[Tuple[str, int]] = field(default_factory=list)
-    # NEW: Store temporary overrides. Structure: { "Monday": {0: False, 1: True} }
-    # True = Force Available, False = Force Unavailable
+    # Store temporary overrides. Structure: { "Monday": {0: False, 1: True} }
     time_overrides: Dict[str, Dict[int, bool]] = field(default_factory=dict)
 
     def is_available(self, day: str, time_idx: int) -> bool:
@@ -52,13 +51,22 @@ class Shift:
 class Scheduler:
     def __init__(self, members: List[Member], active_days: List[str] = None, 
                  pre_filled_grid: List[Shift] = None, forbidden_pairs: List[Tuple[str, str]] = None,
-                 must_schedule: List[str] = None, never_schedule: List[str] = None):
+                 must_schedule: List[str] = None, never_schedule: List[str] = None,
+                 previous_state: Dict[Tuple[str, int], List[str]] = None): 
         self.members = members
         self.active_days = active_days if active_days else ALL_DAYS
         self.forbidden_pairs = forbidden_pairs if forbidden_pairs else []
         self.must_schedule = must_schedule if must_schedule else []
         self.never_schedule = never_schedule if never_schedule else []
+        self.previous_state = previous_state if previous_state else {}
         
+        # Build Reverse Map for Poaching Check: Member -> List of (Day, Time) previously assigned
+        self.prev_member_slots = {}
+        for (day, time), names in self.previous_state.items():
+            for name in names:
+                if name not in self.prev_member_slots: self.prev_member_slots[name] = []
+                self.prev_member_slots[name].append((day, time))
+
         if pre_filled_grid:
             self.schedule_grid = pre_filled_grid
         else:
@@ -69,6 +77,7 @@ class Scheduler:
         self.max_filled_count = -1
         self.top_schedules = []
         
+        # Filter active members for solving
         self.working_members = [m for m in self.members if m.name not in self.never_schedule]
 
     def _initialize_grid(self) -> List[Shift]:
@@ -132,7 +141,8 @@ class Scheduler:
             pass 
 
         if self.top_schedules:
-            self.top_schedules.sort(key=lambda x: x['score'], reverse=True)
+            # Sort by Changes (Ascending) then Score (Descending)
+            self.top_schedules.sort(key=lambda x: (x['changes'], -x['score']))
             self.restore_state(self.top_schedules[0]['state'])
             return len(self.top_schedules)
         else:
@@ -150,7 +160,9 @@ class Scheduler:
             self.max_filled_count = current_filled_count
             self.best_grid_state = self._capture_state()
 
+        # SUCCESS: Found a full schedule
         if current_filled_count == len(self.schedule_grid):
+            # Check Must Schedule
             assigned_names = set()
             for s in self.schedule_grid:
                 for m in s.assigned_members:
@@ -160,15 +172,24 @@ class Scheduler:
                 if must_name not in assigned_names:
                     return False 
             
-            score = 0
+            # Calculate Scores
+            pref_score = 0
+            changes_count = 0
+            
             for s in self.schedule_grid:
                 for m in s.assigned_members:
-                    if s.day in m.preferred_days: score += 5
+                    if s.day in m.preferred_days: pref_score += 5
+                
+                prev_names = self.previous_state.get((s.day, s.time_idx), [])
+                curr_names = [m.name for m in s.assigned_members]
+                if set(prev_names) != set(curr_names):
+                    changes_count += 1
             
             self.top_schedules.append({
                 "state": self._capture_state(),
-                "score": score,
-                "description": f"Full Schedule (Score: {score})"
+                "score": pref_score,
+                "changes": changes_count,
+                "description": f"Changes: {changes_count} | Score: {pref_score}"
             })
             
             if len(self.top_schedules) >= 51:
@@ -183,6 +204,7 @@ class Scheduler:
         if current_shift.locked and len(current_shift.assigned_members) >= 2:
             return self._backtrack(shift_index + 1)
 
+        # CASE 1: 1 Person Assigned (Partial Lock)
         if len(current_shift.assigned_members) == 1:
             existing_member = current_shift.assigned_members[0]
             partners = self._get_valid_partners(current_shift, existing_member)
@@ -197,15 +219,51 @@ class Scheduler:
                 p.assigned_shifts.pop()
             return False
 
+        # CASE 2: Empty Slot
         potential_pairs = self._get_valid_pairs(current_shift)
         
+        # --- OPTIMIZED SORTING ---
         def pair_score(pair):
             p1, p2 = pair
             score = 0
-            if p1.name in self.must_schedule: score += 1000
-            if p2.name in self.must_schedule: score += 1000
-            if current_shift.day in p1.preferred_days: score += 5
-            if current_shift.day in p2.preferred_days: score += 5
+            
+            # A. PREVIOUS STATE (STABILITY) - HIGHEST PRIORITY
+            prev_names = self.previous_state.get((current_shift.day, current_shift.time_idx), [])
+            is_exact_match = False
+            
+            if prev_names:
+                # Exact Match: +5000 (Dominant)
+                if set([p1.name, p2.name]) == set(prev_names):
+                    score += 5000 
+                    is_exact_match = True
+                # Partial Match: +500
+                elif p1.name in prev_names or p2.name in prev_names:
+                    score += 500
+            
+            # B. MUST SCHEDULE - HIGH PRIORITY (but less than exact stability)
+            if p1.name in self.must_schedule: score += 200
+            if p2.name in self.must_schedule: score += 200
+            
+            # C. PREFERENCES - LOW PRIORITY
+            if current_shift.day in p1.preferred_days: score += 10
+            if current_shift.day in p2.preferred_days: score += 10
+            
+            # D. ANTI-POACHING PENALTY
+            # If this pair is NOT an exact match for this slot, check if we are stealing 
+            # them from a slot they occupied in the previous state.
+            if not is_exact_match:
+                # Check P1
+                p1_prev_slots = self.prev_member_slots.get(p1.name, [])
+                if p1_prev_slots:
+                    if (current_shift.day, current_shift.time_idx) not in p1_prev_slots:
+                        score -= 100 
+                
+                # Check P2
+                p2_prev_slots = self.prev_member_slots.get(p2.name, [])
+                if p2_prev_slots:
+                    if (current_shift.day, current_shift.time_idx) not in p2_prev_slots:
+                        score -= 100
+
             return score
             
         potential_pairs.sort(key=pair_score, reverse=True)
@@ -420,12 +478,11 @@ def export_configuration(schedule_grid, forbidden_pairs, active_days, must_sched
             "assigned": [m.name for m in shift.assigned_members]
         })
     
-    # NEW: Extract overrides from members
+    # Extract overrides from members
     overrides_data = {}
     for m in members:
         if m.time_overrides:
             # We need to serialize Dict[int, bool] keys to strings for JSON
-            # { "Monday": { "0": true } }
             overrides_data[m.name] = {
                 day: {str(t): val for t, val in times.items()} 
                 for day, times in m.time_overrides.items()
@@ -436,7 +493,7 @@ def export_configuration(schedule_grid, forbidden_pairs, active_days, must_sched
         "forbidden_pairs": forbidden_pairs,
         "must_schedule": must_schedule,
         "never_schedule": never_schedule,
-        "overrides": overrides_data, # NEW
+        "overrides": overrides_data, 
         "grid": grid_data
     }, indent=2)
 
@@ -455,12 +512,11 @@ def load_configuration(json_content, all_members):
     # 2. Map existing member objects by name for quick lookup
     member_map = {m.name: m for m in all_members}
     
-    # NEW: Restore Overrides
+    # Restore Overrides
     overrides_data = data.get("overrides", {})
     for name, day_map in overrides_data.items():
         if name in member_map:
             # Convert keys back to int
-            # { "Monday": {0: True} }
             restored_overrides = {}
             for day, t_map in day_map.items():
                 restored_overrides[day] = {int(t): val for t, val in t_map.items()}
