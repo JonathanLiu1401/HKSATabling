@@ -77,7 +77,6 @@ with st.sidebar:
     st.header("1. Configuration")
     all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     
-    # UPDATED: Use 'default' parameter to ensure days are selected on first load
     selected_days = st.multiselect(
         "Active Days:", 
         all_days, 
@@ -86,15 +85,31 @@ with st.sidebar:
     )
     st.session_state['active_days'] = selected_days
     
+    # --- AUTOSAVE RESTORE LOGIC (MOVED UP) ---
+    # This must run BEFORE the file uploader to handle page reloads
+    if not st.session_state['members']: 
+        # Only try to restore if we are empty (fresh load/reload)
+        autosave_data = ls.getItem("hksa_autosave_v1")
+        
+        if autosave_data:
+            # We found data! Restore it automatically.
+            try:
+                restore_state_from_json(autosave_data)
+                st.toast("🔄 Restored session from browser storage!", icon="💾")
+                st.rerun() # Force a rerun to update the UI immediately
+            except Exception as e:
+                # If save file is corrupted, ignore it so user can upload fresh
+                print(f"Autosave load failed: {e}")
+
     st.header("2. Upload Data")
     uploaded_file = st.file_uploader("Upload Availability.csv", type=["csv", "xlsx"])
     
     if uploaded_file:
         current_hash = hash(uploaded_file.getvalue())
         if current_hash != st.session_state['file_hash']:
-            # New File Uploaded
+            # New File Uploaded - This overrides autosave
             st.session_state['file_hash'] = current_hash
-            st.session_state['autosave_restored'] = False # Reset restore flag
+            st.session_state['autosave_restored'] = False 
             try:
                 members = core.parse_file(uploaded_file)
                 st.session_state['members'] = members
@@ -106,19 +121,6 @@ with st.sidebar:
                 st.error(f"Error parsing: {e}")
         elif st.session_state['members']:
             st.info(f"Loaded {len(st.session_state['members'])} members")
-            
-            # --- AUTOSAVE RESTORE LOGIC ---
-            if not st.session_state['autosave_restored']:
-                autosave_data = ls.getItem("hksa_autosave_v1")
-                if autosave_data:
-                    try:
-                        restore_state_from_json(autosave_data)
-                        st.toast("🔄 Restored session from browser storage!", icon="💾")
-                        st.session_state['autosave_restored'] = True
-                        st.rerun()
-                    except Exception as e:
-                        print(f"Autosave restore failed: {e}")
-                        st.session_state['autosave_restored'] = True
 
     st.header("3. Actions")
     if st.button("🚀 Auto-Generate Schedule", type="primary"):
