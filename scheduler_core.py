@@ -468,7 +468,7 @@ def generate_excel_bytes(schedule_grid, active_days, all_members=None):
     return output.getvalue()
 
 def export_configuration(schedule_grid, forbidden_pairs, active_days, must_schedule, never_schedule, members):
-    """Serializes the current schedule state to a JSON string."""
+    """Serializes the current schedule state AND member data to a JSON string."""
     grid_data = []
     for shift in schedule_grid:
         grid_data.append({
@@ -478,28 +478,36 @@ def export_configuration(schedule_grid, forbidden_pairs, active_days, must_sched
             "assigned": [m.name for m in shift.assigned_members]
         })
     
-    # Extract overrides from members
-    overrides_data = {}
+    # NEW: Serialize FULL Member Data
+    members_data = []
     for m in members:
-        if m.time_overrides:
-            # We need to serialize Dict[int, bool] keys to strings for JSON
-            overrides_data[m.name] = {
+        members_data.append({
+            "name": m.name,
+            "gender": m.gender,
+            "availability": m.availability, # Dict[str, List[int]]
+            "avoid_opening": m.avoid_opening,
+            "avoid_closing": m.avoid_closing,
+            "preferred_days": m.preferred_days,
+            # We also save overrides here
+            "time_overrides": {
                 day: {str(t): val for t, val in times.items()} 
                 for day, times in m.time_overrides.items()
             }
+        })
 
     return json.dumps({
         "active_days": active_days,
         "forbidden_pairs": forbidden_pairs,
         "must_schedule": must_schedule,
         "never_schedule": never_schedule,
-        "overrides": overrides_data, 
+        "members": members_data, # NEW: Saving member definitions
         "grid": grid_data
     }, indent=2)
 
-def load_configuration(json_content, all_members):
+def load_configuration(json_content, existing_members=None):
     """
-    Parses a JSON string and reconstructs the grid state.
+    Parses a JSON string and reconstructs the grid state AND member objects.
+    If 'existing_members' is None, it rebuilds them from the JSON data.
     """
     data = json.loads(json_content)
     
@@ -509,18 +517,42 @@ def load_configuration(json_content, all_members):
     must_schedule = data.get("must_schedule", [])
     never_schedule = data.get("never_schedule", [])
     
-    # 2. Map existing member objects by name for quick lookup
-    member_map = {m.name: m for m in all_members}
-    
-    # Restore Overrides
-    overrides_data = data.get("overrides", {})
-    for name, day_map in overrides_data.items():
-        if name in member_map:
-            # Convert keys back to int
-            restored_overrides = {}
-            for day, t_map in day_map.items():
-                restored_overrides[day] = {int(t): val for t, val in t_map.items()}
-            member_map[name].time_overrides = restored_overrides
+    # 2. Reconstruct Member Objects (CRITICAL FIX)
+    restored_members = []
+    if "members" in data:
+        # Rebuild from JSON (Autosave / Full Save)
+        for m_data in data["members"]:
+            # Restore overrides (convert keys back to int)
+            overrides = {}
+            if "time_overrides" in m_data:
+                for day, t_map in m_data["time_overrides"].items():
+                    overrides[day] = {int(t): val for t, val in t_map.items()}
+            
+            new_m = Member(
+                name=m_data["name"],
+                gender=m_data["gender"],
+                availability=m_data["availability"],
+                avoid_opening=m_data["avoid_opening"],
+                avoid_closing=m_data["avoid_closing"],
+                preferred_days=m_data["preferred_days"],
+                time_overrides=overrides
+            )
+            restored_members.append(new_m)
+    elif existing_members:
+        # Fallback: Use existing members (Legacy Save Files)
+        restored_members = existing_members
+        # Restore Overrides for legacy saves
+        overrides_data = data.get("overrides", {})
+        for m in restored_members:
+            if m.name in overrides_data:
+                day_map = overrides_data[m.name]
+                restored_overrides = {}
+                for day, t_map in day_map.items():
+                    restored_overrides[day] = {int(t): val for t, val in t_map.items()}
+                m.time_overrides = restored_overrides
+
+    # Map for quick lookup
+    member_map = {m.name: m for m in restored_members}
 
     # 3. Reconstruct Grid
     new_grid = []
@@ -534,15 +566,15 @@ def load_configuration(json_content, all_members):
         new_shift = Shift(day, time_idx, time_label)
         new_shift.locked = slot_data["locked"]
         
-        restored_members = []
+        assigned_list = []
         for name in slot_data["assigned"]:
             if name in member_map:
                 member = member_map[name]
-                restored_members.append(member)
+                assigned_list.append(member)
                 if (day, time_idx) not in member.assigned_shifts:
                     member.assigned_shifts.append((day, time_idx))
         
-        new_shift.assigned_members = restored_members
+        new_shift.assigned_members = assigned_list
         new_grid.append(new_shift)
         
-    return active_days, forbidden_pairs, must_schedule, never_schedule, new_grid
+    return active_days, forbidden_pairs, must_schedule, never_schedule, new_grid, restored_members

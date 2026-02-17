@@ -21,17 +21,16 @@ def apply_config_callback():
 
 def restore_state_from_json(json_str):
     """Helper to parse JSON and update session state."""
-    # 1. Clear current assignments
-    for m in st.session_state['members']:
-        m.assigned_shifts = []
-
-    # 2. Load and Parse
-    a_days, f_pairs, must_s, never_s, new_grid = core.load_configuration(
+    
+    # 1. Load Everything (Now includes members!)
+    # We pass None for existing_members because we want to rebuild them from the JSON
+    a_days, f_pairs, must_s, never_s, new_grid, restored_members = core.load_configuration(
         json_str, 
-        st.session_state['members']
+        None 
     )
     
-    # 3. Update Session State (Data)
+    # 2. Update Session State (Data)
+    st.session_state['members'] = restored_members # CRITICAL: Restore the members list!
     st.session_state['active_days_selection'] = a_days  
     st.session_state['active_days'] = a_days
     st.session_state['forbidden_pairs'] = f_pairs
@@ -41,7 +40,7 @@ def restore_state_from_json(json_str):
     st.session_state['top_schedules'] = [] 
     st.session_state['last_stable_state'] = {} 
 
-    # 4. Update Session State (UI Widgets)
+    # 3. Update Session State (UI Widgets)
     st.session_state['widget_must'] = must_s
     st.session_state['widget_never'] = never_s
 
@@ -58,6 +57,7 @@ if 'must_schedule' not in st.session_state: st.session_state['must_schedule'] = 
 if 'never_schedule' not in st.session_state: st.session_state['never_schedule'] = []
 if 'last_stable_state' not in st.session_state: st.session_state['last_stable_state'] = {}
 if 'autosave_restored' not in st.session_state: st.session_state['autosave_restored'] = False
+if 'autosave_decision_made' not in st.session_state: st.session_state['autosave_decision_made'] = False
 
 st.title("📅 HKSA Tabling Scheduler Pro")
 
@@ -72,11 +72,40 @@ def capture_current_state():
         state[(shift.day, shift.time_idx)] = names
     return state
 
+# --- AUTOSAVE RESTORE LOGIC (MUST RUN FIRST) ---
+autosave_key = "hksa_autosave_v1"
+autosave_data = ls.getItem(autosave_key)
+
+# We check if data exists AND if we haven't already asked/restored for this session
+if autosave_data and not st.session_state.get('members') and not st.session_state.get('autosave_decision_made'):
+    with st.sidebar:
+        with st.container(border=True):
+            st.warning("💾 **Unsaved Session Found!**")
+            st.markdown("Do you want to restore your previous work?")
+            
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("✅ Yes", use_container_width=True):
+                    try:
+                        restore_state_from_json(autosave_data)
+                        st.session_state['autosave_decision_made'] = True
+                        st.toast("🔄 Session restored!", icon="💾")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Corrupt save: {e}")
+            
+            with col_no:
+                if st.button("❌ No", use_container_width=True):
+                    # User chose to start fresh. We mark decision as made so this prompt hides.
+                    st.session_state['autosave_decision_made'] = True
+                    st.rerun()
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("1. Configuration")
     all_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     
+    # Now that session_state is populated (if autosave existed), this widget picks it up automatically.
     selected_days = st.multiselect(
         "Active Days:", 
         all_days, 
@@ -85,24 +114,27 @@ with st.sidebar:
     )
     st.session_state['active_days'] = selected_days
     
-    # --- AUTOSAVE RESTORE LOGIC (MOVED UP) ---
-    # This must run BEFORE the file uploader to handle page reloads
-    if not st.session_state['members']: 
-        # Only try to restore if we are empty (fresh load/reload)
-        autosave_data = ls.getItem("hksa_autosave_v1")
-        
-        if autosave_data:
-            # We found data! Restore it automatically.
-            try:
-                restore_state_from_json(autosave_data)
-                st.toast("🔄 Restored session from browser storage!", icon="💾")
-                st.rerun() # Force a rerun to update the UI immediately
-            except Exception as e:
-                # If save file is corrupted, ignore it so user can upload fresh
-                print(f"Autosave load failed: {e}")
-
     st.header("2. Upload Data")
     uploaded_file = st.file_uploader("Upload Availability.csv", type=["csv", "xlsx"])
+    
+    if uploaded_file:
+        current_hash = hash(uploaded_file.getvalue())
+        # Only process if it's a NEW file (different from what might be in autosave)
+        if current_hash != st.session_state.get('file_hash'):
+            st.session_state['file_hash'] = current_hash
+            try:
+                members = core.parse_file(uploaded_file)
+                st.session_state['members'] = members
+                st.session_state['top_schedules'] = [] 
+                st.session_state['schedule_grid'] = []
+                st.session_state['last_stable_state'] = {}
+                st.success(f"Loaded {len(members)} members")
+                # Clear any lingering autosave conflicts
+                st.session_state['autosave_restored'] = False
+            except Exception as e:
+                st.error(f"Error parsing: {e}")
+        elif st.session_state.get('members'):
+            st.info(f"Loaded {len(st.session_state['members'])} members")
     
     if uploaded_file:
         current_hash = hash(uploaded_file.getvalue())
