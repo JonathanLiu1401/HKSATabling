@@ -361,30 +361,53 @@ def parse_file(file_obj) -> List[Member]:
     try:
         if file_obj.name.endswith('.csv'): df = pd.read_csv(file_obj)
         else: df = pd.read_excel(file_obj)
-    except: return []
+    except Exception:
+        return []
     df.columns = [str(c).strip() for c in df.columns]
     col_map = {}
+    # First match wins for each key (guards prevent later columns from overwriting)
     for col in df.columns:
         c_lower = col.lower()
-        if "name (first and last)" in c_lower: col_map["name"] = col
-        elif "name" in c_lower and "user" not in c_lower: col_map["name"] = col
-        elif "gender" in c_lower: col_map["gender"] = col
-        elif "ok" in c_lower and "open" in c_lower: col_map["pref_open"] = col
-        elif "ok" in c_lower and "clo" in c_lower: col_map["pref_close"] = col
-        elif "select days" in c_lower and "prefer" in c_lower: col_map["pref_days"] = col
-        elif "monday" in c_lower: col_map["Monday"] = col
-        elif "tuesday" in c_lower: col_map["Tuesday"] = col
-        elif "wednesday" in c_lower: col_map["Wednesday"] = col
-        elif "thursday" in c_lower: col_map["Thursday"] = col
-        elif "friday" in c_lower: col_map["Friday"] = col
-    
-    members_map = {} 
+        if "name (first and last)" in c_lower and "name" not in col_map:
+            col_map["name"] = col
+        elif "name" in c_lower and "user" not in c_lower and "name" not in col_map:
+            col_map["name"] = col
+        elif "gender" in c_lower and "gender" not in col_map:
+            col_map["gender"] = col
+        elif "ok" in c_lower and "open" in c_lower and "pref_open" not in col_map:
+            col_map["pref_open"] = col
+        elif "ok" in c_lower and "clo" in c_lower and "pref_close" not in col_map:
+            col_map["pref_close"] = col
+        elif "select days" in c_lower and "prefer" in c_lower and "pref_days" not in col_map:
+            col_map["pref_days"] = col
+        elif "monday" in c_lower and "Monday" not in col_map:
+            col_map["Monday"] = col
+        elif "tuesday" in c_lower and "Tuesday" not in col_map:
+            col_map["Tuesday"] = col
+        elif "wednesday" in c_lower and "Wednesday" not in col_map:
+            col_map["Wednesday"] = col
+        elif "thursday" in c_lower and "Thursday" not in col_map:
+            col_map["Thursday"] = col
+        elif "friday" in c_lower and "Friday" not in col_map:
+            col_map["Friday"] = col
+
+    if "name" not in col_map:
+        raise ValueError(
+            "CSV is missing a Name column. Expected a column matching "
+            "'Name (First and Last)' or containing 'name'."
+        )
+
+    members_map = {}
     for idx, row in df.iterrows():
-        if "name" not in col_map: break 
         name = str(row[col_map["name"]]).strip()
-        gender = str(row[col_map["gender"]]).strip()
-        avoid_open = "no" in str(row[col_map["pref_open"]]).lower()
-        avoid_close = "no" in str(row[col_map["pref_close"]]).lower()
+        if not name or name.lower() == "nan":
+            continue
+        gender = str(row[col_map["gender"]]).strip() if "gender" in col_map else "Unknown"
+        # Exact-match Yes/No (substring matching would false-positive on "no preference" etc.)
+        pref_open_val = str(row[col_map["pref_open"]]).strip().lower() if "pref_open" in col_map else ""
+        pref_close_val = str(row[col_map["pref_close"]]).strip().lower() if "pref_close" in col_map else ""
+        avoid_open = pref_open_val in ("no", "n")
+        avoid_close = pref_close_val in ("no", "n")
         pref_days = []
         if "pref_days" in col_map and pd.notna(row[col_map["pref_days"]]):
             raw_pref = str(row[col_map["pref_days"]])
@@ -541,6 +564,10 @@ def load_configuration(json_content, existing_members=None):
     elif existing_members:
         # Fallback: Use existing members (Legacy Save Files)
         restored_members = existing_members
+        # Clear stale assigned_shifts before re-populating from the saved grid below;
+        # otherwise pre-load assignments survive and falsely trip the 1-shift-per-week filter.
+        for m in restored_members:
+            m.assigned_shifts = []
         # Restore Overrides for legacy saves
         overrides_data = data.get("overrides", {})
         for m in restored_members:

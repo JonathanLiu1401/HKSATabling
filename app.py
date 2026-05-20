@@ -9,11 +9,11 @@ st.set_page_config(page_title="HKSA Scheduler", page_icon="📅", layout="wide")
 def apply_config_callback():
     """
     Called immediately when a file is uploaded, BEFORE the rest of the app runs.
-    This allows us to update widget states safely.
+    The JSON contains the full member list, so we don't require a prior CSV upload.
     """
-    uploaded_file = st.session_state.get('config_loader') # Access via key
-    
-    if uploaded_file and st.session_state.get('members'):
+    uploaded_file = st.session_state.get('config_loader')
+
+    if uploaded_file:
         try:
             restore_state_from_json(uploaded_file.getvalue())
         except Exception as e:
@@ -74,30 +74,42 @@ def capture_current_state():
 
 # --- AUTOSAVE RESTORE LOGIC (MUST RUN FIRST) ---
 autosave_key = "hksa_autosave_v1"
+autosave_dismissed_key = "hksa_autosave_dismissed_v1"
 autosave_data = ls.getItem(autosave_key)
 
-# We check if data exists AND if we haven't already asked/restored for this session
-if autosave_data and not st.session_state.get('members') and not st.session_state.get('autosave_decision_made'):
+# Tie the dismissal flag to the autosave content's hash, so a new autosave re-prompts
+# but refreshing the page after dismissal does not.
+current_autosave_hash = str(hash(autosave_data)) if autosave_data else ""
+dismissed_hash = ls.getItem(autosave_dismissed_key) or ""
+already_dismissed_persistently = bool(current_autosave_hash) and dismissed_hash == current_autosave_hash
+
+if (
+    autosave_data
+    and not st.session_state.get('members')
+    and not st.session_state.get('autosave_decision_made')
+    and not already_dismissed_persistently
+):
     with st.sidebar:
         with st.container(border=True):
             st.warning("💾 **Unsaved Session Found!**")
             st.markdown("Do you want to restore your previous work?")
-            
+
             col_yes, col_no = st.columns(2)
             with col_yes:
                 if st.button("✅ Yes", use_container_width=True):
                     try:
                         restore_state_from_json(autosave_data)
                         st.session_state['autosave_decision_made'] = True
+                        ls.setItem(autosave_dismissed_key, current_autosave_hash)
                         st.toast("🔄 Session restored!", icon="💾")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Corrupt save: {e}")
-            
+
             with col_no:
                 if st.button("❌ No", use_container_width=True):
-                    # User chose to start fresh. We mark decision as made so this prompt hides.
                     st.session_state['autosave_decision_made'] = True
+                    ls.setItem(autosave_dismissed_key, current_autosave_hash)
                     st.rerun()
 
 # --- SIDEBAR ---
@@ -107,12 +119,40 @@ with st.sidebar:
     
     # Now that session_state is populated (if autosave existed), this widget picks it up automatically.
     selected_days = st.multiselect(
-        "Active Days:", 
-        all_days, 
-        default=all_days, 
+        "Active Days:",
+        all_days,
+        default=all_days,
         key="active_days_selection"
     )
     st.session_state['active_days'] = selected_days
+
+    # Keep schedule_grid in sync with active_days. The solver iterates schedule_grid
+    # directly with no day filter, so a stale grid would silently schedule into hidden days.
+    if st.session_state.get('schedule_grid'):
+        grid = st.session_state['schedule_grid']
+        grid_keys = {(s.day, s.time_idx) for s in grid}
+        expected_keys = {(d, idx) for d in selected_days for idx in core.TIME_SLOTS.values()}
+        if grid_keys != expected_keys:
+            removed_slot_count = 0
+            for s in grid:
+                if s.day not in selected_days:
+                    for m in s.assigned_members:
+                        if (s.day, s.time_idx) in m.assigned_shifts:
+                            m.assigned_shifts.remove((s.day, s.time_idx))
+                    removed_slot_count += 1
+            new_grid = [s for s in grid if s.day in selected_days]
+            existing = {(s.day, s.time_idx) for s in new_grid}
+            for day in selected_days:
+                for label, idx in core.TIME_SLOTS.items():
+                    if (day, idx) not in existing:
+                        new_grid.append(core.Shift(day, idx, label))
+            st.session_state['schedule_grid'] = new_grid
+            st.session_state['last_stable_state'] = {
+                (d, t): names for (d, t), names in st.session_state.get('last_stable_state', {}).items()
+                if d in selected_days
+            }
+            if removed_slot_count:
+                st.info(f"🔄 Day selection changed — cleared {removed_slot_count} now-inactive slot(s). Reroll to re-fill.")
     
     st.header("2. Upload Data")
     uploaded_file = st.file_uploader("Upload Availability.csv", type=["csv", "xlsx"])
@@ -125,33 +165,13 @@ with st.sidebar:
             try:
                 members = core.parse_file(uploaded_file)
                 st.session_state['members'] = members
-                st.session_state['top_schedules'] = [] 
+                st.session_state['top_schedules'] = []
                 st.session_state['schedule_grid'] = []
                 st.session_state['last_stable_state'] = {}
                 st.success(f"Loaded {len(members)} members")
-                # Clear any lingering autosave conflicts
-                st.session_state['autosave_restored'] = False
             except Exception as e:
                 st.error(f"Error parsing: {e}")
         elif st.session_state.get('members'):
-            st.info(f"Loaded {len(st.session_state['members'])} members")
-    
-    if uploaded_file:
-        current_hash = hash(uploaded_file.getvalue())
-        if current_hash != st.session_state['file_hash']:
-            # New File Uploaded - This overrides autosave
-            st.session_state['file_hash'] = current_hash
-            st.session_state['autosave_restored'] = False 
-            try:
-                members = core.parse_file(uploaded_file)
-                st.session_state['members'] = members
-                st.session_state['top_schedules'] = [] 
-                st.session_state['schedule_grid'] = []
-                st.session_state['last_stable_state'] = {}
-                st.success(f"Loaded {len(members)} members")
-            except Exception as e:
-                st.error(f"Error parsing: {e}")
-        elif st.session_state['members']:
             st.info(f"Loaded {len(st.session_state['members'])} members")
 
     st.header("3. Actions")
@@ -201,14 +221,12 @@ with st.sidebar:
         )
 
     st.file_uploader(
-        "Load Config (.json)", 
-        type=["json"], 
-        key="config_loader", 
-        on_change=apply_config_callback
+        "Load Config (.json)",
+        type=["json"],
+        key="config_loader",
+        on_change=apply_config_callback,
+        help="Restores schedule, locks, conflicts, participation lists, and member data — no CSV upload needed."
     )
-
-    if st.session_state.get('config_loader') and not st.session_state.get('members'):
-        st.warning("⚠️ Please upload the Availability CSV first!")
 
 # --- HELPER FUNCTIONS ---
 def get_member_options(day, time_idx, current_shift_members):
@@ -262,7 +280,7 @@ def perform_overwrite_assign(target_shift, new_members):
                         p_new.assigned_shifts.remove((shift.day, shift.time_idx))
     for old_m in target_shift.assigned_members:
         if old_m not in new_members:
-            real_old_m = find_member_exact(old_m.name.split(")")[-1].strip())
+            real_old_m = find_member_exact(old_m.name.strip())
             if real_old_m and (target_shift.day, target_shift.time_idx) in real_old_m.assigned_shifts:
                 real_old_m.assigned_shifts.remove((target_shift.day, target_shift.time_idx))
     target_shift.assigned_members = new_members
@@ -271,6 +289,29 @@ def perform_overwrite_assign(target_shift, new_members):
 
 def select_slot(day, time_idx):
     st.session_state['editor_selected_slot'] = (day, time_idx)
+
+def get_incomplete_slot_keys(grid, exclude_shift, active_days):
+    """Returns {(day, time_idx)} for shifts in active_days that are not target_shift and
+    have fewer than 2 members assigned."""
+    return {
+        (s.day, s.time_idx)
+        for s in grid
+        if s.day in active_days
+        and s is not exclude_shift
+        and len(s.assigned_members) < 2
+    }
+
+def warn_if_understaffed(before_keys, after_keys):
+    newly_understaffed = after_keys - before_keys
+    if newly_understaffed:
+        slot_strs = [f"{d} (slot at idx {idx})" for d, idx in sorted(newly_understaffed)]
+        st.toast(
+            f"⚠️ Move left these slots understaffed: {', '.join(slot_strs)}. "
+            f"Use 'Lock & Reroll' instead to auto-fill.",
+            icon="⚠️",
+        )
+        return True
+    return False
 
 # --- MAIN UI ---
 if not st.session_state['schedule_grid']:
@@ -298,13 +339,13 @@ else:
                 shift = next((s for s in grid if s.day == day and s.time_idx == time_idx), None)
                 p1, p2 = "-", "-"
                 if shift:
-                    if len(shift.assigned_members) >= 1: 
+                    if len(shift.assigned_members) >= 1:
                         p1 = shift.assigned_members[0].name
-                        assigned_names.add(p1.split(")")[-1].strip())
+                        assigned_names.add(p1.strip())
                         if shift.locked: p1 += " 🔒"
-                    if len(shift.assigned_members) >= 2: 
+                    if len(shift.assigned_members) >= 2:
                         p2 = shift.assigned_members[1].name
-                        assigned_names.add(p2.split(")")[-1].strip())
+                        assigned_names.add(p2.strip())
                         if shift.locked: p2 += " 🔒"
                 row_a[day] = p1; row_b[day] = p2
             data_rows.append(row_a); data_rows.append(row_b)
@@ -435,9 +476,12 @@ else:
                             if sel2 != "(Unfilled)":
                                 m2 = find_member_by_str(sel2)
                                 if m2 and m2 not in new_members: new_members.append(m2)
+                            before_keys = get_incomplete_slot_keys(grid, target_shift, selected_days)
                             perform_overwrite_assign(target_shift, new_members)
                             target_shift.locked = False
-                            st.success("Updated!")
+                            after_keys = get_incomplete_slot_keys(grid, target_shift, selected_days)
+                            if not warn_if_understaffed(before_keys, after_keys):
+                                st.toast("Updated!", icon="✅")
                             st.rerun()
                     with b_col2:
                         if st.button("🔒 Lock (No Reroll)", use_container_width=True):
@@ -448,10 +492,12 @@ else:
                             if sel2 != "(Unfilled)":
                                 m2 = find_member_by_str(sel2)
                                 if m2 and m2 not in new_members: new_members.append(m2)
-                            
+                            before_keys = get_incomplete_slot_keys(grid, target_shift, selected_days)
                             perform_overwrite_assign(target_shift, new_members)
                             target_shift.locked = True
-                            st.success("Locked!")
+                            after_keys = get_incomplete_slot_keys(grid, target_shift, selected_days)
+                            if not warn_if_understaffed(before_keys, after_keys):
+                                st.toast("Locked!", icon="🔒")
                             st.rerun()
 
                     with b_col3:
@@ -596,6 +642,22 @@ else:
         target_member = find_member_exact(target_name)
         
         if target_member:
+            # Surface stale assignments: anyone currently scheduled into a slot they're
+            # no longer available for (due to override changes) won't be auto-removed
+            # until a reroll. Show what's stale so the user knows what to fix.
+            conflict_slots = []
+            idx_to_label = {v: k for k, v in core.TIME_SLOTS.items()}
+            for s in st.session_state.get('schedule_grid', []):
+                if any(m.name == target_name for m in s.assigned_members):
+                    if not target_member.is_available(s.day, s.time_idx):
+                        conflict_slots.append(f"{s.day} {idx_to_label.get(s.time_idx, s.time_idx)}")
+            if conflict_slots:
+                st.warning(
+                    f"⚠️ **{target_name}** is currently scheduled at "
+                    f"{', '.join(conflict_slots)} but their availability now marks "
+                    "those slots as unavailable. Use 'Lock & Reroll' on those slots to re-optimize."
+                )
+
             st.divider()
             display_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
